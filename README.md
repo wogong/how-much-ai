@@ -6,6 +6,22 @@ This repository is the open-source, single-tenant edition. It has no hosted sign
 
 > How Much AI is unofficial and is not affiliated with Anthropic or OpenAI.
 
+[![How Much Usage hosted landing page](docs/images/how-much-usage-landing.png)](https://howmuchusage.ai/)
+
+*Preview the managed version at [howmuchusage.ai](https://howmuchusage.ai/). This repository remains free to self-host with unlimited accounts.*
+
+## Self-hosted or managed
+
+Self-hosting is free, has no account limit, and keeps the application and infrastructure under your control. If you do not want to operate it, the managed versions include one account free and use a one-time unlock instead of a subscription:
+
+| Managed version | Providers | Unlimited-account unlock |
+| --- | --- | --- |
+| [How Much Usage](https://howmuchusage.ai/) | Claude and ChatGPT/Codex | **$15 once** |
+| [How Much Claude](https://howmuchclaude.com/) | Claude | **$9 once** |
+| [How Much Codex](https://howmuchcodex.com/) | ChatGPT/Codex | **$9 once** |
+
+The managed fee pays for the hosted service. It is not a license fee for this MIT-licensed repository.
+
 ## Quick start
 
 You need Node.js 22.18.0 or newer.
@@ -20,6 +36,14 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000). With no environment variables, the dashboard is intentionally open and stores accounts in an encrypted local vault under `.data/`.
 
 That zero-configuration mode is suitable only for your own computer or a trusted private network. Set `APP_PASSWORD` before making the app reachable by anyone else.
+
+## Set up with an AI coding agent
+
+Give your agent this brief after cloning the repository:
+
+> Set up How Much AI locally. Read `AGENTS.md` before changing anything. Run `npm ci`, then `npm run dev`, and use only credentials and infrastructure created for this installation. Do not import environment values, Convex deployments, vault data, or provider credentials from another project. Copy `.env.example` to `.env.local` only if configuration is needed. Before finishing, run `npm test`, `npm run typecheck`, and `npm run build`.
+
+[`AGENTS.md`](AGENTS.md) contains the product boundary, architecture map, security invariants, and validation rules for Codex, Claude Code, Cursor, and other repository-aware agents.
 
 ## Connect accounts
 
@@ -45,6 +69,19 @@ The server selects one backend from the environment:
 Local file storage creates `.data/vault.enc` and `.data/vault.key`. Back up the whole `.data` directory; the encrypted vault cannot be recovered without its matching key or configured encryption secret.
 
 See [Self-hosting](docs/SELF_HOSTING.md) for complete Convex, Redis, notification, backup, reverse-proxy, and production instructions. Every supported variable is documented in [`.env.example`](.env.example).
+
+### Bring your own Convex project
+
+Convex is optional for basic local use. Choose it when you want durable remote storage, multi-instance coordination, device pairing, or scheduled notifications.
+
+```bash
+npx convex dev
+npx convex env set VAULT_ACCESS_SECRET
+```
+
+The first command creates or selects a Convex project and writes its generated deployment configuration to `.env.local`. Create a new strong `VAULT_ACCESS_SECRET` for this installation, use the same value in `.env.local`, and let the second command prompt for it so it does not enter your shell history. Never reuse the maintainer's or another installation's deployment, URL, or secret.
+
+For production deployment, scheduler configuration, notifications, secret rotation, and backups, follow the complete [BYO Convex instructions](docs/SELF_HOSTING.md#6-storage-option-b-convex).
 
 ## Put it on a network safely
 
