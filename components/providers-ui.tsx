@@ -9,11 +9,26 @@ export interface ProviderMeta {
   label: string;
   Icon: (props: { className?: string }) => ReactElement;
   supportsOAuth: boolean;
+  // The CLI whose rotating login the quick-connect methods copy, phrased for possessive use
+  // ("<cliLabel>'s rotating login"). Only providers with a shared CLI credential need it.
+  cliLabel: string;
 }
 
 export const PROVIDER_META: Record<ProviderId, ProviderMeta> = {
-  anthropic: { id: "anthropic", label: "Claude", Icon: AnthropicIcon, supportsOAuth: true },
-  openai: { id: "openai", label: "ChatGPT", Icon: OpenAIIcon, supportsOAuth: false },
+  anthropic: {
+    id: "anthropic",
+    label: "Claude",
+    Icon: AnthropicIcon,
+    supportsOAuth: true,
+    cliLabel: "Claude Code",
+  },
+  openai: {
+    id: "openai",
+    label: "ChatGPT",
+    Icon: OpenAIIcon,
+    supportsOAuth: false,
+    cliLabel: "the Codex CLI",
+  },
 };
 
 // Picker order (matches lib/providers PROVIDERS).
