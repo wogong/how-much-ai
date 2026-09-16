@@ -19,6 +19,7 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  output: process.env.BUILD_STANDALONE === "1" ? "standalone" : undefined,
   // Never let Next's output tracer copy a developer's local encrypted vault into a build artifact.
   outputFileTracingExcludes: {
     "/*": ["./.data/**/*"],

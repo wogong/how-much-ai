@@ -1,0 +1,14 @@
+.git
+node_modules
+.next
+.data
+.env*
+**/.env*
+**/vault*.enc*
+**/vault.key
+**/token-recovery
+convex/_generated
+*.tsbuildinfo
+.playwright-mcp
+.claude
+outputs
