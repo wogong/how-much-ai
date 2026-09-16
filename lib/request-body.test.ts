@@ -56,6 +56,30 @@ test("browser mutation guard rejects explicit and Fetch-Metadata cross-origin re
   assert.equal(browserMutationFailure(new Request("http://localhost/api/test")), null);
 });
 
+test("browser mutation guard accepts the configured public origin behind a proxy", () => {
+  const previous = process.env.APP_URL;
+  const proxied = (origin: string) =>
+    new Request("http://127.0.0.1:3001/api/test", { headers: { Origin: origin } });
+  try {
+    process.env.APP_URL = "https://dashboard.example";
+    assert.equal(browserMutationFailure(proxied("https://dashboard.example")), null);
+    assert.deepEqual(browserMutationFailure(proxied("https://attacker.example")), {
+      error: "Cross-origin request is not allowed",
+      status: 403,
+    });
+    assert.equal(browserMutationFailure(proxied("http://127.0.0.1:3001")), null);
+
+    process.env.APP_URL = "not-a-url";
+    assert.deepEqual(browserMutationFailure(proxied("https://dashboard.example")), {
+      error: "Cross-origin request is not allowed",
+      status: 403,
+    });
+  } finally {
+    if (previous === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = previous;
+  }
+});
+
 test("bounded JSON reader rejects malformed and missing bodies as 400", async () => {
   await assert.rejects(() => readJsonObject(post("{")), /Invalid JSON body/);
   await assert.rejects(

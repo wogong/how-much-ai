@@ -66,6 +66,7 @@ export function AccountCard({
   // poll (a cooldown), not a live fetch. We keep the bars but flag their age.
   const stale = (snapshot?.stale ?? false) && status !== "reauth";
   const displayName = accountDisplayName(account);
+  const provider = providerMeta(account.provider);
   const credentialKind = account.credentialKind;
   const managedLogin = credentialKind === "managed";
   const setupToken = credentialKind === "long_lived";
@@ -163,11 +164,10 @@ export function AccountCard({
         </div>
         <div className="flex shrink-0 items-center gap-1 self-end xs:self-auto">
           {(() => {
-            const meta = providerMeta(account.provider);
-            const ProviderMark = meta.Icon;
+            const ProviderMark = provider.Icon;
             return (
               <span
-                title={`${meta.label} · ${account.plan}`}
+                title={`${provider.label} · ${account.plan}`}
                 className="mr-1 inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted"
               >
                 <span className="inline-flex" style={{ color: "var(--accent-bright)" }}>
@@ -247,14 +247,16 @@ export function AccountCard({
       {sharedCliLogin && status !== "reauth" && (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-xs leading-relaxed text-[#f0c47d]">
           <span className="max-w-sm">
-            This account shares Claude Code&apos;s rotating login. A private app login renews independently.
+            {provider.supportsOAuth
+              ? `This account shares ${provider.cliLabel}'s rotating login. A private app login renews independently.`
+              : `This account shares ${provider.cliLabel}'s rotating login. Whichever side renews it can disconnect the other.`}
           </span>
           <button
             type="button"
             onClick={onReconnect}
             className="min-h-11 rounded-lg border border-current/30 px-3 font-semibold text-ivory transition-colors hover:bg-white/5"
           >
-            Replace with private login
+            {provider.supportsOAuth ? "Replace with private login" : `Re-import ${provider.cliLabel} login`}
           </button>
         </div>
       )}
@@ -289,14 +291,22 @@ export function AccountCard({
                 ? "This private app login expired or was revoked. Sign in with Claude again to restore automatic renewal."
                 : setupToken
                   ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
-                  : "This shared Claude Code session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard."}
+                  : provider.supportsOAuth
+                    ? `This shared ${provider.cliLabel} session rotated somewhere else. Replace it with a private app login so normal CLI refreshes cannot disconnect the dashboard.`
+                    : `This shared ${provider.cliLabel} session rotated somewhere else. Re-import the current login from that machine to restore checks.`}
             </p>
             <button
               type="button"
               onClick={onReconnect}
               className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
             >
-              {managedLogin ? "Reconnect private login" : setupToken ? "Replace with private login" : "Reconnect reliably"}
+              {managedLogin
+                ? "Reconnect private login"
+                : setupToken
+                  ? "Replace with private login"
+                  : provider.supportsOAuth
+                    ? "Reconnect reliably"
+                    : `Re-import ${provider.cliLabel} login`}
             </button>
           </div>
         ) : hasBars ? (

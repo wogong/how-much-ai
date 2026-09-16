@@ -91,8 +91,19 @@ export function requestBodyFailure(error: unknown): { error: string; status: 400
 export function browserMutationFailure(req: Request): { error: string; status: 403 } | null {
   const suppliedOrigin = req.headers.get("origin")?.trim();
   if (suppliedOrigin) {
+    // Behind a TLS-terminating reverse proxy, `req.url` keeps the loopback origin the Node server
+    // was bound to, so the public origin must be allowed explicitly via APP_URL.
+    const allowed = new Set([new URL(req.url).origin]);
+    const configured = process.env.APP_URL?.trim();
+    if (configured) {
+      try {
+        allowed.add(new URL(configured).origin);
+      } catch {
+        // An unparsable APP_URL simply adds no extra origin.
+      }
+    }
     try {
-      if (new URL(suppliedOrigin).origin !== new URL(req.url).origin) {
+      if (!allowed.has(new URL(suppliedOrigin).origin)) {
         return { error: "Cross-origin request is not allowed", status: 403 };
       }
     } catch {
