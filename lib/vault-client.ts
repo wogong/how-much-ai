@@ -77,6 +77,7 @@ function isBrowserAccount(value: unknown): value is BrowserAccount {
     "addedAt",
     "credentialKind",
     "provider",
+    "source",
     "credentialExpiresAt",
   ]);
   if (!Object.keys(account).every((key) => allowed.has(key))) return false;
@@ -95,6 +96,7 @@ function isBrowserAccount(value: unknown): value is BrowserAccount {
     (account.provider === undefined ||
       account.provider === "anthropic" ||
       account.provider === "openai") &&
+    (account.source === undefined || account.source === "sub2api") &&
     typeof account.credentialExpiresAt === "number" &&
     Number.isFinite(account.credentialExpiresAt) &&
     account.credentialExpiresAt >= 0

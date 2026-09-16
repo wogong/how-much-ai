@@ -20,6 +20,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { scopedKey } from "./app-config";
 import { withLocalVaultMutationLock } from "./local-file-lock";
+import { normalizeSub2ApiUrl, validSub2ApiAccountId } from "./sub2api-config";
 import type { AccountCredentialKind, AccountTokens, StoredAccount } from "./types";
 import type { ProviderId } from "./providers/types";
 
@@ -1072,6 +1073,19 @@ export function parseStoredAccounts(value: unknown): StoredAccount[] {
     }
     const provider: ProviderId | undefined = providerValue === "openai" ? "openai" : undefined;
 
+    let sub2api: StoredAccount["sub2api"];
+    if (candidate.sub2api !== undefined) {
+      const source = candidate.sub2api;
+      if (!record(source) || !validSub2ApiAccountId(source.accountId) || credentialKind !== "long_lived" || refreshToken !== null) {
+        throw new VaultValidationError(`accounts[${index}].sub2api must identify an externally managed account`);
+      }
+      try {
+        sub2api = { baseUrl: normalizeSub2ApiUrl(source.baseUrl), accountId: source.accountId };
+      } catch {
+        throw new VaultValidationError(`accounts[${index}].sub2api.baseUrl must be a valid HTTP(S) URL`);
+      }
+    }
+
     const fullName = optionalBoundedString(candidate.fullName, "fullName", index);
     const label = optionalBoundedString(candidate.label, "label", index);
 
@@ -1084,6 +1098,7 @@ export function parseStoredAccounts(value: unknown): StoredAccount[] {
       addedAt,
       credentialKind,
       ...(provider ? { provider } : {}),
+      ...(sub2api ? { sub2api } : {}),
       tokens: {
         accessToken: requiredString(candidate.tokens.accessToken, "tokens.accessToken", index, {
           nonEmpty: true,

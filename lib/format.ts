@@ -27,7 +27,7 @@ function kindRank(kind: string): number {
 
 // The `limits` array is the richest source (it carries per-model scoped limits and severity).
 // Fall back to the flat buckets for older response shapes.
-export function extractBars(usage: UsageData): Bar[] {
+export function extractBars(usage: UsageData, now = Date.now()): Bar[] {
   if (usage.limits && usage.limits.length > 0) {
     return [...usage.limits]
       .sort((a, b) => kindRank(a.kind) - kindRank(b.kind))
@@ -53,6 +53,8 @@ export function extractBars(usage: UsageData): Bar[] {
 
   const bars: Bar[] = [];
   const push = (key: string, label: string, bucket?: { utilization: number | null; resets_at: string | null } | null) => {
+    // A saved external snapshot can expire while it is still cached or displayed in a tab.
+    if (usage.snapshot?.source === "sub2api" && bucket?.resets_at && Date.parse(bucket.resets_at) <= now) return;
     if (bucket && bucket.utilization != null) {
       bars.push({
         key,

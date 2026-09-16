@@ -4,6 +4,8 @@
 import { anthropicProvider } from "./anthropic";
 import { openaiProvider } from "./openai";
 import { DEFAULT_PROVIDER, type Provider, type ProviderId } from "./types";
+import { sub2ApiProvider } from "../sub2api";
+import type { StoredAccount } from "../types";
 
 export { DEFAULT_PROVIDER, ProviderError, httpStatusOf } from "./types";
 export type { Provider, ProviderId, ProviderProfile } from "./types";
@@ -22,4 +24,9 @@ export function isProviderId(id: unknown): id is ProviderId {
 
 export function getProvider(id?: string | null): Provider {
   return isProviderId(id) ? BY_ID[id] : BY_ID[DEFAULT_PROVIDER];
+}
+
+export function getAccountProvider(account: StoredAccount): Provider {
+  const provider = getProvider(account.provider);
+  return account.sub2api ? sub2ApiProvider(provider, account.sub2api) : provider;
 }

@@ -49,6 +49,7 @@ export interface Provider {
   readonly label: string; // human name for the picker/badge, e.g. "Claude", "ChatGPT / Codex"
   // True when this provider supports the in-app OAuth PKCE "private login" connect method.
   readonly supportsOAuth: boolean;
+  readonly managesCredentialsExternally?: boolean;
 
   // Refresh a (rotating) credential. Throws AnthropicError/ProviderError with a `.status` on failure;
   // single-use refresh tokens must never be retried by the provider itself. `opts.scopes` lets the
@@ -57,7 +58,7 @@ export interface Provider {
   refresh(tokens: AccountTokens, opts?: { scopes?: string }): Promise<AccountTokens>;
 
   // Fetch normalized subscription usage. Throws with a `.status` on non-2xx / unusable responses.
-  fetchUsage(tokens: AccountTokens): Promise<UsageData>;
+  fetchUsage(tokens: AccountTokens, opts?: { activeRefresh?: boolean }): Promise<UsageData>;
 
   // Resolve identity + plan from a credential (network or token-decode). Used by the connect flow.
   resolveIdentity(tokens: AccountTokens): Promise<ProviderProfile>;
