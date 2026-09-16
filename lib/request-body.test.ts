@@ -69,6 +69,16 @@ test("browser mutation guard accepts the configured public origin behind a proxy
     });
     assert.equal(browserMutationFailure(proxied("http://127.0.0.1:3001")), null);
 
+    process.env.APP_EXTRA_ORIGINS = " https://public.example/, not-a-url ,http://lan.example:3301";
+    assert.equal(browserMutationFailure(proxied("https://public.example")), null);
+    assert.equal(browserMutationFailure(proxied("http://lan.example:3301")), null);
+    assert.equal(browserMutationFailure(proxied("https://dashboard.example")), null);
+    assert.deepEqual(browserMutationFailure(proxied("https://attacker.example")), {
+      error: "Cross-origin request is not allowed",
+      status: 403,
+    });
+    delete process.env.APP_EXTRA_ORIGINS;
+
     process.env.APP_URL = "not-a-url";
     assert.deepEqual(browserMutationFailure(proxied("https://dashboard.example")), {
       error: "Cross-origin request is not allowed",

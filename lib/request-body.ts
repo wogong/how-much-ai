@@ -92,14 +92,15 @@ export function browserMutationFailure(req: Request): { error: string; status: 4
   const suppliedOrigin = req.headers.get("origin")?.trim();
   if (suppliedOrigin) {
     // Behind a TLS-terminating reverse proxy, `req.url` keeps the loopback origin the Node server
-    // was bound to, so the public origin must be allowed explicitly via APP_URL.
+    // was bound to, so the public origin must be allowed explicitly via APP_URL. Deployments reached
+    // through more than one hostname list the others in APP_EXTRA_ORIGINS (comma-separated).
     const allowed = new Set([new URL(req.url).origin]);
-    const configured = process.env.APP_URL?.trim();
-    if (configured) {
+    for (const configured of [process.env.APP_URL, ...(process.env.APP_EXTRA_ORIGINS?.split(",") ?? [])]) {
+      if (!configured?.trim()) continue;
       try {
-        allowed.add(new URL(configured).origin);
+        allowed.add(new URL(configured.trim()).origin);
       } catch {
-        // An unparsable APP_URL simply adds no extra origin.
+        // An unparsable configured origin simply adds nothing.
       }
     }
     try {

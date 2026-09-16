@@ -332,7 +332,7 @@ docker compose --env-file /dev/null -p how-much-ai-sub2api-test -f compose.test.
 docker compose --env-file /dev/null -p how-much-ai-sub2api-test -f compose.test.yaml ps
 ```
 
-Open [http://mt-gpu2.bunny-viper.ts.net:3301](http://mt-gpu2.bunny-viper.ts.net:3301) from a device with Tailscale access to this host. The test stack binds to this host's Tailscale IPv4 address and sets `APP_URL` to this Tailscale DNS origin so same-origin protection works across Docker's port mapping. On another host, update both the published address and `APP_URL` in `compose.test.yaml` to that host's Tailscale IP and browser-facing origin, respectively.
+Open [http://mt-gpu2.bunny-viper.ts.net:3301](http://mt-gpu2.bunny-viper.ts.net:3301) from a device with Tailscale access to this host. The test stack binds to this host's Tailscale IPv4 address and sets `APP_URL` to this Tailscale DNS origin so same-origin protection works across Docker's port mapping. On another host, update both the published address and `APP_URL` in `compose.test.yaml` to that host's Tailscale IP and browser-facing origin, respectively. If the same instance is also reached through another origin (for example a public domain behind a reverse proxy), list it in `APP_EXTRA_ORIGINS` (comma-separated); otherwise browser writes from that origin fail with "Cross-origin request is not allowed".
 
 Isolation is deliberate:
 
