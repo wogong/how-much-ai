@@ -8,6 +8,7 @@ import type { BrowserAccount } from "@/lib/types";
 import type { ProviderId } from "@/lib/providers/types";
 import { CheckIcon, CopyIcon, DesktopIcon, SpinnerIcon, TerminalIcon } from "./Icons";
 import { ModalShell } from "./ModalShell";
+import { Sub2ApiConnect } from "./Sub2ApiConnect";
 import { PROVIDER_META, PROVIDER_ORDER, parseCodexCredential } from "./providers-ui";
 
 interface AddAccountModalProps {
@@ -83,6 +84,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
   const [showPaste, setShowPaste] = useState(true);
   // Which provider is being connected. Reconnect is locked to the account's own provider.
   const [provider, setProvider] = useState<ProviderId>("anthropic");
+  const [source, setSource] = useState<"direct" | "sub2api">("direct");
 
   // Paste flow.
   const [os, setOs] = useState<OS>("macOS");
@@ -325,6 +327,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
     setMode("paste");
     setShowPaste(true);
     setProvider(reconnectAccount?.provider ?? "anthropic");
+    setSource(reconnectAccount?.source === "sub2api" ? "sub2api" : "direct");
     setPasted("");
     setCredentialMethod("private-login");
     setError(null);
@@ -981,7 +984,7 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       {PROVIDER_ORDER.map((pid) => {
         const meta = PROVIDER_META[pid];
         const Icon = meta.Icon;
-        const active = provider === pid;
+        const active = source === "direct" && provider === pid;
         return (
           <button
             key={pid}
@@ -989,6 +992,8 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
             disabled={requestBusy}
             aria-pressed={active}
             onClick={() => {
+              stopPolling();
+              setSource("direct");
               setProvider(pid);
               setError(null);
               setLocalError(null);
@@ -1003,6 +1008,11 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
           </button>
         );
       })}
+      <button type="button" disabled={requestBusy} aria-pressed={source === "sub2api"}
+        onClick={() => { stopPolling(); setSource("sub2api"); setError(null); }}
+        className={`inline-flex min-h-11 items-center rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${source === "sub2api" ? "bg-surface-hover text-ivory" : "text-faint enabled:hover:text-muted"}`}>
+        sub2api
+      </button>
     </div>
   );
 
@@ -1092,14 +1102,17 @@ export function AddAccountModal({ open, onClose, reconnectAccount, onServerConne
       open={open}
       title={reconnectAccount ? `Reconnect ${reconnectAccount.label || reconnectAccount.email}` : "Connect an account"}
       description={
-        reconnectAccount ? "Authorize this same account so its expired session can be replaced without changing its dashboard identity." : undefined
+        reconnectAccount?.source === "sub2api" ? "Reconnect the same sub2api instance and account with its current admin key." : reconnectAccount ? "Authorize this same account so its expired session can be replaced without changing its dashboard identity." : undefined
       }
       onClose={onClose}
       dismissible={!requestBusy && (!connected || Boolean(completionError))}
     >
       <div className="contents" data-provider={provider}>
       {providerPicker}
-      {provider === "openai" ? (
+      {source === "sub2api" ? (
+        connected ? <div className="mt-5">{successCard}</div> : <Sub2ApiConnect
+          expectedAccountId={reconnectAccount?.id} onBusyChange={setWorking} onConnected={finishServerConnect} />
+      ) : provider === "openai" ? (
         openaiBlock
       ) : (
       <div className="mt-5">

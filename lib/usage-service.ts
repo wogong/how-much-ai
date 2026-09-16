@@ -25,7 +25,7 @@ import {
   fetchUsage,
   isProfilePermissionError,
 } from "./anthropic";
-import { getProvider, httpStatusOf } from "./providers/index";
+import { getAccountProvider, httpStatusOf } from "./providers/index";
 import {
   createRedisUsageCacheFromConfig,
   redisUsageConfig,
@@ -103,10 +103,17 @@ function rowToEntry(row: CacheRow | null): CacheEntry | null {
   };
 }
 
-function coordinatedCacheAction(entry: CacheEntry | null, now: number): CacheAction {
+function coordinatedCacheAction(entry: CacheEntry | null, now: number, activeRefresh = false, usage?: UsageData | null): CacheAction {
   // Reauth is terminal until an explicit reconnect clears this account's cache state. Treating a
   // rejected token as valid merely because its timestamp is in the future would restart rotation.
   if (entry?.status === "reauth") return "cooldown";
+  if (activeRefresh) {
+    // Manual sub2api reads bypass passive cache freshness, never leases or backoff.
+    if (entry && entry.cooldownUntil > now) return "cooldown";
+    const completedAt = usage?.snapshot?.refreshCompletedAt;
+    if (entry?.hasUsage && completedAt && now >= completedAt && now - completedAt < 10_000) return "fresh";
+    return "fetch";
+  }
   return decideCacheAction(entry, now);
 }
 
@@ -292,11 +299,12 @@ async function refreshAndFetch(
   now: number,
   store: CacheStore,
   prior: Prior,
+  activeRefresh = false,
 ): Promise<AccountUsageResult> {
   // This function is used only for already-connected accounts. The server vault is authoritative;
   // browser-posted credentials can be blank, hours stale, or already spent and must never influence
   // which single-use refresh generation the lease owner uses.
-  const provider = getProvider(account.provider);
+  const provider = getAccountProvider(account);
   let tokens = (await currentVaultTokens(userId, account.id)) ?? account.tokens;
   let rotated = false;
 
@@ -322,10 +330,11 @@ async function refreshAndFetch(
       tokens = base;
       return null;
     }
-    if (!base.refreshToken) {
+    if (provider.managesCredentialsExternally || !base.refreshToken) {
       const { status, cooldownUntil } = reauthPatch(now);
       await store.commit({ status, cooldownUntil });
-      return reauthResult(now, prior);
+      return reauthResult(now, prior, provider.managesCredentialsExternally
+        ? new Error("sub2api rejected the admin key. Reconnect sub2api.") : undefined);
     }
     try {
       const refreshed = await provider.refresh(
@@ -403,7 +412,7 @@ async function refreshAndFetch(
   // Some older CLI credential files omit expiresAt. A bearer token just verified during connection
   // should be used until its first real 401, not rotated immediately merely because metadata is absent.
   const unknownRotatingExpiry = Boolean(tokens.refreshToken) && tokens.expiresAt <= 0;
-  if (!unknownRotatingExpiry && needsRefresh(tokens, now)) {
+  if (!provider.managesCredentialsExternally && !unknownRotatingExpiry && needsRefresh(tokens, now)) {
     const bail = await doRefresh();
     if (bail) return bail;
   }
@@ -412,8 +421,8 @@ async function refreshAndFetch(
   let profile: ProfileData | null;
   try {
     [usage, profile] = await Promise.all([
-      provider.fetchUsage(tokens),
-      provider.id === "anthropic" ? fetchProfileForCredential(tokens) : Promise.resolve(null),
+      provider.fetchUsage(tokens, { activeRefresh }),
+      provider.id === "anthropic" && !provider.managesCredentialsExternally ? fetchProfileForCredential(tokens) : Promise.resolve(null),
     ]);
   } catch (err) {
     if (httpStatusOf(err) === 401 && rotated) {
@@ -425,14 +434,14 @@ async function refreshAndFetch(
         new Error("Claude rejected the replacement access token. Reconnect with the private app login."),
       );
     }
-    if (httpStatusOf(err) === 401) {
+    if (httpStatusOf(err) === 401 || (provider.managesCredentialsExternally && httpStatusOf(err) === 403)) {
       // Access token stale despite our bookkeeping — refresh once (still inside the lock) and retry.
       const bail = await doRefresh(true);
       if (bail) return bail;
       try {
         [usage, profile] = await Promise.all([
-          provider.fetchUsage(tokens),
-          provider.id === "anthropic" ? fetchProfileForCredential(tokens) : Promise.resolve(null),
+          provider.fetchUsage(tokens, { activeRefresh }),
+          provider.id === "anthropic" && !provider.managesCredentialsExternally ? fetchProfileForCredential(tokens) : Promise.resolve(null),
         ]);
       } catch (retryError) {
         if (httpStatusOf(retryError) === 401) {
@@ -511,6 +520,7 @@ async function getAccountUsageConvex(
   cx: { url: string; secret: string },
   userId: string,
   account: StoredAccount,
+  activeRefresh = false,
 ): Promise<AccountUsageResult> {
   const client = new ConvexHttpClient(cx.url);
   const key = usageCacheKey(userId, account.id);
@@ -524,7 +534,7 @@ async function getAccountUsageConvex(
   let claim: { acquired: boolean; cached: CacheRow | null };
   try {
     row = (await client.query(anyApi.usageCache.get, { secret: cx.secret, key })) as CacheRow | null;
-    const action = coordinatedCacheAction(rowToEntry(row), now);
+    const action = coordinatedCacheAction(rowToEntry(row), now, activeRefresh, parseJson<UsageData>(row?.usage));
     if (action === "fresh") return readyOrStaleResult(row, false);
     if (action === "cooldown") return readyOrStaleResult(row, true);
 
@@ -539,6 +549,15 @@ async function getAccountUsageConvex(
   if (!claim.acquired) {
     // Someone else is refreshing — serve cached instead of a second upstream call.
     return readyOrStaleResult(claim.cached ?? row, true);
+  }
+
+  if (activeRefresh) {
+    const action = coordinatedCacheAction(rowToEntry(claim.cached), Date.now(), true, parseJson<UsageData>(claim.cached?.usage));
+    if (action !== "fetch") {
+      await client.mutation(anyApi.usageCache.release, { secret: cx.secret, key, owner }).catch(() => {});
+      return readyOrStaleResult(claim.cached, action === "cooldown");
+    }
+    row = claim.cached ?? row;
   }
 
   let renewalInFlight = false;
@@ -580,7 +599,7 @@ async function getAccountUsageConvex(
   };
 
   try {
-    return await refreshAndFetch(userId, account, now, store, prior);
+    return await refreshAndFetch(userId, account, now, store, prior, activeRefresh);
   } catch (err) {
     await store.release().catch(() => {});
     return failedRefreshResult(prior, err);
@@ -595,6 +614,7 @@ async function getAccountUsageRedis(
   config: RedisRestConfig,
   userId: string,
   account: StoredAccount,
+  activeRefresh = false,
 ): Promise<AccountUsageResult> {
   const cache = createRedisUsageCacheFromConfig(config);
   const key = usageCacheKey(userId, account.id);
@@ -608,7 +628,7 @@ async function getAccountUsageRedis(
   // same refresh token. Last-good cached data is safe to serve if the claim call itself fails.
   try {
     row = await cache.get(key);
-    const action = coordinatedCacheAction(rowToEntry(row), now);
+    const action = coordinatedCacheAction(rowToEntry(row), now, activeRefresh, parseJson<UsageData>(row?.usage));
     if (action === "fresh") return readyOrStaleResult(row, false);
     if (action === "cooldown") return readyOrStaleResult(row, true);
     claim = await cache.claim(key, owner, REFRESH_LOCK_MS);
@@ -634,7 +654,7 @@ async function getAccountUsageRedis(
 
   // Another owner may have published fresh data between our first GET and this successful claim.
   // Re-check the atomic claim snapshot and release without another upstream request when possible.
-  const claimedAction = coordinatedCacheAction(rowToEntry(claim.cached), Date.now());
+  const claimedAction = coordinatedCacheAction(rowToEntry(claim.cached), Date.now(), activeRefresh, parseJson<UsageData>(claim.cached?.usage));
   if (claimedAction === "fresh" || claimedAction === "cooldown") {
     await cache.release(key, owner).catch(() => false);
     return readyOrStaleResult(claim.cached, claimedAction === "cooldown");
@@ -684,7 +704,7 @@ async function getAccountUsageRedis(
   };
 
   try {
-    return await refreshAndFetch(userId, account, now, store, prior);
+    return await refreshAndFetch(userId, account, now, store, prior, activeRefresh);
   } catch (error) {
     await store.release().catch(() => {});
     return failedRefreshResult(prior, error);
@@ -740,12 +760,12 @@ function localResult(e: LocalEntry | null, stale: boolean): AccountUsageResult {
   };
 }
 
-async function getAccountUsageLocal(userId: string, account: StoredAccount): Promise<AccountUsageResult> {
+async function getAccountUsageLocal(userId: string, account: StoredAccount, activeRefresh = false): Promise<AccountUsageResult> {
   const key = usageCacheKey(userId, account.id);
   const now = Date.now();
   const entry = localCache.get(key) ?? null;
 
-  const action = coordinatedCacheAction(localToEntry(entry), now);
+  const action = coordinatedCacheAction(localToEntry(entry), now, activeRefresh, entry?.usage);
   if (action === "fresh") return localResult(entry, false);
   if (action === "cooldown") return localResult(entry, true);
 
@@ -776,7 +796,7 @@ async function getAccountUsageLocal(userId: string, account: StoredAccount): Pro
   const p = (async () => {
     try {
       return await withLocalUsageRefreshLock(userId, account.id, () =>
-        refreshAndFetch(userId, account, now, store, prior),
+        refreshAndFetch(userId, account, now, store, prior, activeRefresh),
       );
     } catch (err) {
       return failedRefreshResult(prior, err);
@@ -818,7 +838,7 @@ export async function clearAccountUsageState(userId: string, accountId: string):
 
 // The one entry point. `account` carries the id (cache key) and the caller's view of the tokens; the
 // vault is the authoritative token source when a refresh is actually needed.
-export async function getAccountUsage(userId: string, account: StoredAccount): Promise<AccountUsageResult> {
+export async function getAccountUsage(userId: string, account: StoredAccount, opts?: { activeRefresh?: boolean }): Promise<AccountUsageResult> {
   let persisted: StoredAccount | undefined;
   try {
     persisted = (await loadAccounts(userId)).find((candidate) => candidate.id === account.id);
@@ -847,11 +867,19 @@ export async function getAccountUsage(userId: string, account: StoredAccount): P
   // Ignore the browser's token fields entirely. `accountId` is the lookup key; the server vault is
   // the sole credential authority and remains correct even for a stale tab or a future id-only API.
   const effective = persisted;
+  const activeRefresh = Boolean(effective.sub2api && opts?.activeRefresh);
   const cx = convexConfig();
-  if (cx) return getAccountUsageConvex(cx, userId, effective);
-  const redis = redisUsageConfig();
-  if (redis) return getAccountUsageRedis(redis, userId, effective);
-  return getAccountUsageLocal(userId, effective);
+  const redis = cx ? null : redisUsageConfig();
+  const result = cx ? await getAccountUsageConvex(cx, userId, effective, activeRefresh)
+    : redis ? await getAccountUsageRedis(redis, userId, effective, activeRefresh)
+      : await getAccountUsageLocal(userId, effective, activeRefresh);
+  if (effective.sub2api && result.usage) {
+    const sampled = Date.parse(result.usage.snapshot?.sampledAt ?? "");
+    if (!Number.isFinite(sampled) || sampled > Date.now() + 60_000 || Date.now() - sampled > CACHE_TTL_MS) {
+      return { ...result, stale: true, status: result.status === "ready" ? "stale" : result.status };
+    }
+  }
+  return result;
 }
 
 // One-shot verification for the add-account flow. This credential is not durable yet and there is

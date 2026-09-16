@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { loadAccounts } from "@/lib/vault";
+import { syncSub2ApiAccounts } from "@/lib/sub2api";
 import { getAccountUsage } from "@/lib/usage-service";
 import { extractBars } from "@/lib/format";
 import { safeEqual } from "@/lib/session";
@@ -44,6 +45,12 @@ interface UserCheckResult {
 // persists any rotated tokens to the vault itself, so this route no longer does its own token
 // bookkeeping; warming the cache here means the dashboard's next poll is served from cache for free.
 async function checkUser(userId: string, assertLease: () => Promise<void>): Promise<UserCheckResult> {
+  const errors: { user: string; account: string; error: string }[] = [];
+  try {
+    await syncSub2ApiAccounts(userId);
+  } catch (err) {
+    errors.push({ user: userId, account: "*", error: `sub2api sync: ${err instanceof Error ? err.message : String(err)}` });
+  }
   const accounts = await loadAccounts(userId);
 
   const [config, states] = await Promise.all([loadConfig(userId), loadStates(userId)]);
@@ -56,11 +63,14 @@ async function checkUser(userId: string, assertLease: () => Promise<void>): Prom
   const nextStates: StoredNotifyState[] = [];
   const observations: AccountStateObservation<StoredNotifyState>[] = [];
   const eventfulStateKeys = new Set<string>();
-  const errors: { user: string; account: string; error: string }[] = [];
 
   for (const account of accounts) {
     await assertLease();
     const result = await getAccountUsage(userId, account);
+    if (account.sub2api && result.stale) {
+      observations.push({ accountId: account.id, available: false });
+      continue;
+    }
     if (!result.usage) {
       // reauth / error / another poller mid-refresh with no cached data yet. Record and move on —
       // never retry-storm (getAccountUsage already set any cooldown / reauth state).

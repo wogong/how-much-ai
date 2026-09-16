@@ -9,6 +9,7 @@ import {
 } from "@/lib/vault";
 import { browserMutationFailure, readJsonObject, requestBodyFailure } from "@/lib/request-body";
 import { reportServerError } from "@/lib/server-error-diagnostics";
+import { syncSub2ApiAccounts } from "@/lib/sub2api";
 import type { StoredAccount, VaultMutation } from "@/lib/types";
 
 // Force the Node runtime — the vault uses node:crypto to decrypt.
@@ -168,6 +169,8 @@ export async function GET(req: Request) {
   const userId = await requireUser(req);
   if (!userId) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   try {
+    // Pick up accounts added in sub2api since connection. A sync failure must never hide the vault.
+    await syncSub2ApiAccounts(userId).catch(() => {});
     const accounts = await loadAccounts(userId);
     return NextResponse.json(snapshotResponse(accounts));
   } catch (err) {

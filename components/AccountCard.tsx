@@ -60,7 +60,7 @@ export function AccountCard({
 
   const status = snapshot?.status ?? "idle";
   const loading = status === "loading";
-  const bars = snapshot?.usage ? extractBars(snapshot.usage) : null;
+  const bars = snapshot?.usage ? extractBars(snapshot.usage, now) : null;
   const hasBars = !!bars && bars.length > 0;
   // Stale = the server is showing its last-good reading because Anthropic rate-limited the upstream
   // poll (a cooldown), not a live fetch. We keep the bars but flag their age.
@@ -69,7 +69,8 @@ export function AccountCard({
   const provider = providerMeta(account.provider);
   const credentialKind = account.credentialKind;
   const managedLogin = credentialKind === "managed";
-  const setupToken = credentialKind === "long_lived";
+  const externalSource = account.source === "sub2api";
+  const setupToken = credentialKind === "long_lived" && !externalSource;
   const sharedCliLogin = credentialKind === "rotating";
   const tokenDaysRemaining = Math.ceil((account.credentialExpiresAt - now) / 86_400_000);
   const tokenExpiryWarning = setupToken && tokenDaysRemaining <= 30;
@@ -284,10 +285,22 @@ export function AccountCard({
       )}
 
       <div aria-live="polite" className={`mt-5 flex-1 space-y-4 transition-opacity duration-300 ${loading && hasBars ? "opacity-60" : ""}`}>
+        {externalSource && (
+          <div className="space-y-1 text-xs leading-relaxed text-muted">
+            <p>sub2api quota sample: {snapshot?.usage?.snapshot?.sampledAt
+              ? <time dateTime={snapshot.usage.snapshot.sampledAt}>{new Date(snapshot.usage.snapshot.sampledAt).toLocaleString()} ({timeAgo(Date.parse(snapshot.usage.snapshot.sampledAt), now)})</time>
+              : "unknown"}</p>
+            {snapshot?.usage?.snapshot?.refreshCompletedAt && (
+              <p>Active refresh completed: {new Date(snapshot.usage.snapshot.refreshCompletedAt).toLocaleString()}. A successful request may still return cached data.</p>
+            )}
+            <p>Manual refresh asks sub2api to update usage; OpenAI may run an upstream probe.</p>
+          </div>
+        )}
         {status === "reauth" ? (
           <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
             <p className="text-sm leading-relaxed text-muted">
-              {managedLogin
+              {externalSource ? "sub2api rejected its admin key. Reconnect with the current administrator key."
+                : managedLogin
                 ? "This private app login expired or was revoked. Sign in with Claude again to restore automatic renewal."
                 : setupToken
                   ? "This legacy inference-only setup token expired or was revoked. Replace it to restore checks."
@@ -300,7 +313,7 @@ export function AccountCard({
               onClick={onReconnect}
               className="accent-btn min-h-11 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
             >
-              {managedLogin
+              {externalSource ? "Reconnect sub2api" : managedLogin
                 ? "Reconnect private login"
                 : setupToken
                   ? "Replace with private login"
@@ -313,7 +326,8 @@ export function AccountCard({
           <>
             {stale && (
               <div role="status" className="rounded-lg border border-[#e3b56e]/30 bg-[#e3b56e]/10 px-3 py-2 text-[11px] leading-relaxed text-[#e3b56e]">
-                Rate-limited upstream — showing last update from {snapshot?.fetchedAt ? timeAgo(snapshot.fetchedAt, now) : "earlier"}.
+                {externalSource ? snapshot?.error ?? "The quota sample is old or its time is unknown. Use Refresh to request an update from sub2api; its own cache or upstream errors may still leave the sample unchanged."
+                  : `Rate-limited upstream — showing last update from ${snapshot?.fetchedAt ? timeAgo(snapshot.fetchedAt, now) : "earlier"}.`}
               </div>
             )}
             {bars.map((bar) => (
@@ -343,7 +357,7 @@ export function AccountCard({
           // Loaded successfully, but Anthropic reported no active limit buckets for this
           // account (e.g. a brand-new account, or an unrecognized response shape).
           <div className="rounded-xl border border-border bg-bg-raised p-4">
-            <p className="text-sm text-muted">No usage limits reported yet for this account.</p>
+            <p className="text-sm text-muted">{externalSource ? "No current quota snapshot is available. Use Refresh to ask sub2api for usage." : "No usage limits reported yet for this account."}</p>
           </div>
         ) : (
           <div className="space-y-4" aria-hidden>
@@ -366,7 +380,7 @@ export function AccountCard({
               {hasBars ? "refresh failed — showing last data" : "refresh failed"}
             </span>
           ) : stale && hasBars ? (
-            <span className="text-[#e3b56e]">rate-limited — showing last update</span>
+            <span className="text-[#e3b56e]">{externalSource ? "saved snapshot — freshness unconfirmed" : "rate-limited — showing last update"}</span>
           ) : snapshot?.fetchedAt ? (
             `updated ${formatClock(snapshot.fetchedAt)}`
           ) : (
@@ -376,7 +390,7 @@ export function AccountCard({
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span
             title={
-              managedLogin
+              externalSource ? "Usage is read through sub2api; manual refresh requests an upstream usage update" : managedLogin
                 ? "Private app-owned Claude login; renews automatically without sharing Claude Code's session"
                 : setupToken
                   ? `Legacy inference-only setup token; estimated renewal date ${new Date(account.credentialExpiresAt).toLocaleDateString()}`
@@ -384,7 +398,7 @@ export function AccountCard({
             }
             className={sharedCliLogin ? "text-[#e3b56e]" : "text-muted"}
           >
-            {managedLogin ? "private app login · auto-renews" : setupToken ? "setup token · legacy" : "shared CLI login"}
+            {externalSource ? "sub2api · managed externally" : managedLogin ? "private app login · auto-renews" : setupToken ? "setup token · legacy" : "shared CLI login"}
           </span>
           {snapshot?.usage?.extra_usage?.is_enabled && <span>extra usage on</span>}
         </div>

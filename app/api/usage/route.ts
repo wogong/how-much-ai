@@ -28,16 +28,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: failure.error }, { status: failure.status });
   }
 
-  // Dashboard refresh: accept only an account id. Ignoring any posted token fields closes stale-tab
+  // Dashboard refresh: accept an account id and optional active-refresh flag. Ignoring any posted token fields closes stale-tab
   // and forged-expiry paths; getAccountUsage loads the current encrypted vault record itself.
   if (typeof body.accountId !== "string" || !body.accountId.trim() || body.accountId.length > 200) {
     return NextResponse.json({ error: "Invalid or missing account id" }, { status: 400 });
+  }
+  if (body.activeRefresh !== undefined && typeof body.activeRefresh !== "boolean") {
+    return NextResponse.json({ error: "activeRefresh must be a boolean" }, { status: 400 });
   }
   const account = {
     id: body.accountId.trim(),
     tokens: { accessToken: "", refreshToken: null, expiresAt: 0 },
   } as StoredAccount;
-  const result = await getAccountUsage(userId, account);
+  const result = await getAccountUsage(userId, account, { activeRefresh: body.activeRefresh === true });
   // Token rotation and recovery are wholly server-side. Even the exceptional journal-recovery path
   // is allowlisted through this serializer, so browser responses never contain either credential.
   return NextResponse.json(toBrowserUsageResponse(result));

@@ -124,7 +124,7 @@ export async function saveResolvedAccount(
 // Dedupe-by-id persistence shared by every connect path. On a duplicate we keep the user's nickname
 // and original addedAt and refresh the rest. The serialized mutation prevents simultaneous connects
 // from overwriting one another. Fresh tokens supersede cached reauthentication/cooldown state.
-async function persistStoredAccount(userId: string, account: StoredAccount): Promise<ConnectedAccountInfo> {
+export async function persistStoredAccount(userId: string, account: StoredAccount): Promise<ConnectedAccountInfo> {
   let alreadyConnected = false;
   await mutateAccounts(userId, async (existing) => {
     const idx = existing.findIndex((a) => a.id === account.id);

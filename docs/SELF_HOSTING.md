@@ -109,6 +109,16 @@ Never enable it on a remote, shared, or serverless host: the route reads the ser
 
 When the app runs on the same computer as Codex, it can read `~/.codex/auth.json`. Otherwise, paste the complete JSON file into the OpenAI connection form. The server validates and normalizes the credential before it writes the vault.
 
+### sub2api administrator accounts
+
+Choose **Add account → sub2api**. Enter the sub2api base URL and its **Admin API Key** (not a normal inference key) once, then load the combined Claude and ChatGPT account list. Choose **Connect all Claude & ChatGPT accounts** to import all supported subscription accounts across every page, or select an individual account. Bulk connection saves atomically after all pages are read; existing accounts are updated without duplicates, retaining their nicknames and original connection dates. Unrelated accounts are preserved. Accounts added in sub2api later are discovered automatically: the dashboard re-lists each connected instance at most every ten minutes when it loads the vault (page load or tab focus) and the notification cron does the same, appending new supported accounts. Accounts removed in sub2api are kept until you remove them here; they show a refresh error instead. The URL is resolved by the app server; `localhost` inside a container refers to that container. Use HTTPS for connections outside a trusted local network. Redirects are rejected to prevent forwarding the admin key to another host.
+
+The app saves the admin key in its encrypted vault and returns only display metadata to the browser. It retains the upstream provider badge and uses the existing usage cache. Removing an account only disconnects it from this dashboard. To replace a key, reconnect each affected account using the same instance URL and account selection.
+
+Automatic polling reads `GET /api/v1/admin/accounts/:id`; connection also reads the account list. Clicking an account’s **Refresh** or **Refresh all** additionally requests `GET /api/v1/admin/accounts/:id/usage?source=active&force=true`, then rereads the saved snapshot. OpenAI may run an upstream inference probe, while Claude can still use sub2api’s own cache. Concurrent refreshes share the existing refresh coordination; completed active refreshes are reused for ten seconds and upstream rate-limit cooldowns are respected. The integration never calls the credential-refresh endpoint. Upstream credentials remain owned by sub2api. Claude API-key accounts and OpenAI API-key accounts are not subscription accounts and are excluded.
+
+The quota sample timestamp is shown as a local date/time and relative age, separately from the dashboard's last fetch time and the last completed active-refresh request. A successful refresh request does not guarantee a new upstream sample. OpenAI freshness is based on saved `codex_usage_updated_at`, not the usage endpoint’s response time; Claude OAuth can use the active response’s `updated_at`, which may describe a cached result. SetupToken estimates are not treated as live quota samples. Missing or expired windows remain unknown rather than being inferred as 100% remaining. Samples older than five minutes or without a valid sample time are marked stale and do not trigger notifications. A quiet sub2api account may therefore have no current data until sub2api itself records another sample. ChatGPT plan labels are used when metadata supplies them; Claude currently uses the generic provider label. These fields are version-dependent; see [the source investigation](sub2api-research.md).
+
 ### Remote machines
 
 “Connect from this machine” always means the machine running the Next.js server. On a remote server it cannot inspect a visitor's laptop.
@@ -310,6 +320,38 @@ TRUST_PROXY_IP_HEADERS=0
 ```
 
 Set it to `1` only when the immediate proxy removes client-supplied forwarding headers and writes the authoritative client address. Vercel, Cloudflare Pages, and Fly deployments are recognized by their platform environment, but operators remain responsible for their proxy chain.
+
+### Isolated Docker Compose test deployment
+
+The repository includes a production Docker image and a separate evaluation stack.
+
+The Dockerfile sets `BUILD_STANDALONE=1` during compilation to package its server. Leave this variable unset for ordinary `npm run build` / `npm start` deployments. Run from the repository root:
+
+```bash
+docker compose --env-file /dev/null -p how-much-ai-sub2api-test -f compose.test.yaml up -d --build
+docker compose --env-file /dev/null -p how-much-ai-sub2api-test -f compose.test.yaml ps
+```
+
+Open [http://mt-gpu2.bunny-viper.ts.net:3301](http://mt-gpu2.bunny-viper.ts.net:3301) from a device with Tailscale access to this host. The test stack binds to this host's Tailscale IPv4 address and sets `APP_URL` to this Tailscale DNS origin so same-origin protection works across Docker's port mapping. On another host, update both the published address and `APP_URL` in `compose.test.yaml` to that host's Tailscale IP and browser-facing origin, respectively.
+
+Isolation is deliberate:
+
+- Compose project: `how-much-ai-sub2api-test`; no shared container names or existing networks.
+- Binding: `100.126.0.101:3301` on Tailscale, leaving port 3000 and existing instances alone.
+- New project-scoped named volume: `test-vault`, mounted at `/app/.data`; no host `.data` bind mount.
+- Neither `.env.local` nor existing Convex/Redis configuration is loaded. `--env-file /dev/null` also prevents Compose from loading the repository's `.env` for interpolation.
+- `.dockerignore` excludes all environment files, local vaults, and generated artifacts from the build context. The container runs as the unprivileged `node` user.
+- The test dashboard is intentionally password-free and bound only to the Tailscale address; access is limited by the tailnet policy. Do not publish it through an external proxy without configuring separate test authentication.
+
+For a sub2api instance published on this Docker host's port 8080, enter `http://host.docker.internal:8080` in the connection form. The Compose file supplies the Linux host-gateway mapping. Do not copy sub2api database files, provider tokens, or the current dashboard's vault into this test volume.
+
+Stop only the test stack, retaining its vault for the next run:
+
+```bash
+docker compose --env-file /dev/null -p how-much-ai-sub2api-test -f compose.test.yaml down
+```
+
+Do not add `-v` if you want to retain test connections and their encryption key. Rebuilding or recreating the container with the same test volume preserves those connections. Promotion or replacement of an existing deployment is a separate operation after testing; this stack does not perform migration or cutover.
 
 ## 10. Back up and upgrade
 

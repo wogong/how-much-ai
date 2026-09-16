@@ -29,6 +29,7 @@ export function toBrowserAccount(account: StoredAccount): BrowserAccount {
     credentialKind:
       account.credentialKind ?? (account.tokens.refreshToken === null ? "long_lived" : "rotating"),
     provider: account.provider ?? "anthropic",
+    ...(account.sub2api ? { source: "sub2api" as const } : {}),
     credentialExpiresAt: account.tokens.expiresAt,
   };
 }

@@ -193,7 +193,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
   }, [autoRefresh, vaultState]);
 
   const refreshAccount = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string, manual = false): Promise<boolean> => {
       if (inFlight.current.has(id)) return false;
       const existingSnapshot = snapshotsRef.current[id];
       if (
@@ -213,7 +213,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
         const res = await fetch("/api/usage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ accountId: id }),
+          body: JSON.stringify({ accountId: id, activeRefresh: manual && accountsRef.current.find(a => a.id === id)?.source === "sub2api" }),
         });
 
         // A 401 here means the app session expired (not the Claude token) — go re-authenticate.
@@ -312,6 +312,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
           [id]: {
             status: "ready",
             usage,
+            error: data.error,
             profile: data.profile,
             // Stale = the server served its last-good reading during an upstream cooldown; keep the
             // original fetch time so the card can say how old it is.
@@ -336,10 +337,10 @@ export function Dashboard({ showSignOut }: DashboardProps) {
     [queueSave],
   );
 
-  const refreshAll = useCallback(async () => {
+  const refreshAll = useCallback(async (manual = false) => {
     const ids = accountsRef.current.map((a) => a.id);
     if (ids.length === 0) return;
-    const results = await Promise.all(ids.map((id) => refreshAccount(id)));
+    const results = await Promise.all(ids.map((id) => refreshAccount(id, manual)));
     setLastRefreshAll({ at: Date.now(), updated: results.filter(Boolean).length, total: ids.length });
   }, [refreshAccount]);
 
@@ -571,7 +572,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
             </button>
             <button
               type="button"
-              onClick={() => void refreshAll()}
+              onClick={() => void refreshAll(true)}
               disabled={refreshing || accounts.length === 0}
               aria-label="Refresh all accounts"
               title="Refresh all accounts"
@@ -787,7 +788,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
                   snapshot={snapshots[account.id]}
                   now={now}
                   index={i}
-                  onRefresh={() => void refreshAccount(account.id)}
+                  onRefresh={() => void refreshAccount(account.id, true)}
                   onRemove={() => removeAccount(account.id)}
                   onReconnect={() => reconnect(account)}
                   onRename={(label) => renameAccount(account.id, label)}
