@@ -137,10 +137,12 @@ export async function connectAllSub2ApiAccounts(baseUrl: string, adminKey: strin
 // Discover accounts added in sub2api since connection. Append-only: accounts removed upstream keep
 // their nickname and surface as a refresh error instead of vanishing. Runs at most once per
 // instance per interval in this process, so vault reads and cron passes stay cheap.
+// Opt-in via SUB2API_AUTO_SYNC=1; otherwise only explicit connect actions add accounts.
 const SYNC_INTERVAL_MS = 10 * 60_000;
 const lastSyncAt = new Map<string, number>();
 
 export async function syncSub2ApiAccounts(userId: string, opts?: { force?: boolean }): Promise<{ added: number }> {
+  if (process.env.SUB2API_AUTO_SYNC !== "1") return { added: 0 };
   const existing = await loadAccounts(userId);
   const instances = new Map<string, string>();
   for (const account of existing) {

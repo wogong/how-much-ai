@@ -111,7 +111,7 @@ When the app runs on the same computer as Codex, it can read `~/.codex/auth.json
 
 ### sub2api administrator accounts
 
-Choose **Add account → sub2api**. Enter the sub2api base URL and its **Admin API Key** (not a normal inference key) once, then load the combined Claude and ChatGPT account list. Choose **Connect all Claude & ChatGPT accounts** to import all supported subscription accounts across every page, or select an individual account. Bulk connection saves atomically after all pages are read; existing accounts are updated without duplicates, retaining their nicknames and original connection dates. Unrelated accounts are preserved. Accounts added in sub2api later are discovered automatically: the dashboard re-lists each connected instance at most every ten minutes when it loads the vault (page load or tab focus) and the notification cron does the same, appending new supported accounts. Accounts removed in sub2api are kept until you remove them here; they show a refresh error instead. The URL is resolved by the app server; `localhost` inside a container refers to that container. Use HTTPS for connections outside a trusted local network. Redirects are rejected to prevent forwarding the admin key to another host.
+Choose **Add account → sub2api**. Enter the sub2api base URL and its **Admin API Key** (not a normal inference key) once, then load the combined Claude and ChatGPT account list. Choose **Connect all Claude & ChatGPT accounts** to import all supported subscription accounts across every page, or select an individual account. Bulk connection saves atomically after all pages are read; existing accounts are updated without duplicates, retaining their nicknames and original connection dates. Unrelated accounts are preserved. Accounts added in sub2api later are not imported unless `SUB2API_AUTO_SYNC=1` is set; with it, the dashboard re-lists each connected instance at most every ten minutes when it loads the vault (page load or tab focus) and the notification cron does the same, appending new supported accounts. Without it, reopen **Add account → sub2api** and connect the new accounts explicitly. Accounts removed in sub2api are kept until you remove them here; they show a refresh error instead. The URL is resolved by the app server; `localhost` inside a container refers to that container. Use HTTPS for connections outside a trusted local network. Redirects are rejected to prevent forwarding the admin key to another host.
 
 The app saves the admin key in its encrypted vault and returns only display metadata to the browser. It retains the upstream provider badge and uses the existing usage cache. Removing an account only disconnects it from this dashboard. To replace a key, reconnect each affected account using the same instance URL and account selection.
 
@@ -321,11 +321,26 @@ TRUST_PROXY_IP_HEADERS=0
 
 Set it to `1` only when the immediate proxy removes client-supplied forwarding headers and writes the authoritative client address. Vercel, Cloudflare Pages, and Fly deployments are recognized by their platform environment, but operators remain responsible for their proxy chain.
 
+### Docker Compose
+
+`compose.yaml` is the general-purpose deployment. The Dockerfile sets `BUILD_STANDALONE=1` during compilation to package its server; leave this variable unset for ordinary `npm run build` / `npm start` deployments. Run from the repository root:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+By default the app binds `127.0.0.1:3000` and stores the encrypted vault in the named volume `how-much-ai_vault` at `/app/.data`. Configuration comes from three optional, gitignored files:
+
+- `.env.docker` — runtime environment for the container (`APP_URL`, `APP_PASSWORD`, `AUTH_SECRET`, `SUB2API_AUTO_SYNC`, storage and notification variables from `.env.example`). `VAULT_DATA_DIR` is fixed to `/app/.data`.
+- `.env` — Compose interpolation only: `HMA_PORT` (default `3000`) and `HMA_BIND` (default `127.0.0.1`) choose the published address.
+- `compose.override.yaml` — host-specific additions Compose merges automatically, for example an extra Tailscale bind, `user:` matching the host uid, a read-only mount of `~/.claude/.credentials.json` with `ENABLE_LOCAL_CONNECT=1`, or `volumes.vault.name`/`external: true` to adopt an existing volume.
+
+`host.docker.internal` resolves to the Docker host, so a sub2api instance published on the host's port 8080 is `http://host.docker.internal:8080`. `docker compose down` without `-v` keeps the vault volume; the encryption key lives inside it, so back it up before removing it.
+
 ### Isolated Docker Compose test deployment
 
-The repository includes a production Docker image and a separate evaluation stack.
-
-The Dockerfile sets `BUILD_STANDALONE=1` during compilation to package its server. Leave this variable unset for ordinary `npm run build` / `npm start` deployments. Run from the repository root:
+`compose.test.yaml` is a separate evaluation stack with its own project name, network, and volume. Run from the repository root:
 
 ```bash
 docker compose --env-file /dev/null -p how-much-ai-sub2api-test -f compose.test.yaml up -d --build
@@ -343,7 +358,7 @@ Isolation is deliberate:
 - `.dockerignore` excludes all environment files, local vaults, and generated artifacts from the build context. The container runs as the unprivileged `node` user.
 - The test dashboard is intentionally password-free and bound only to the Tailscale address; access is limited by the tailnet policy. Do not publish it through an external proxy without configuring separate test authentication.
 
-For a sub2api instance published on this Docker host's port 8080, enter `http://host.docker.internal:8080` in the connection form. The Compose file supplies the Linux host-gateway mapping. Do not copy sub2api database files, provider tokens, or the current dashboard's vault into this test volume.
+For a sub2api instance published on this Docker host's port 8080, enter `http://host.docker.internal:8080` in the connection form. The Compose file supplies the Linux host-gateway mapping. `SUB2API_AUTO_SYNC` is `"0"` in `compose.test.yaml`; change it to `"1"` there to auto-import accounts added in sub2api after connection. Do not copy sub2api database files, provider tokens, or the current dashboard's vault into this test volume.
 
 Stop only the test stack, retaining its vault for the next run:
 

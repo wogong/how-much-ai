@@ -13,6 +13,8 @@ services:
       # Same-machine shortcut: reads the host's Claude Code login mounted below. Only for a
       # single-user, tailnet-only instance.
       ENABLE_LOCAL_CONNECT: "1"
+      # Set to "1" to auto-import accounts added in sub2api after connection (re-listed every 10 min).
+      SUB2API_AUTO_SYNC: "0"
       HOME: /home/node
     # Match the host user so the 0600 credential file is readable; chown the vault volume once:
     #   docker run --rm -v how-much-ai-sub2api-test_test-vault:/d alpine chown -R 1008:100 /d

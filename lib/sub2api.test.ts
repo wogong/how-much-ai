@@ -259,7 +259,17 @@ test("one setup lists and connects both providers across all pages atomically", 
   assert.equal((await loadAccounts("default")).length, 3);
 });
 
+test("sync is a no-op unless SUB2API_AUTO_SYNC=1", async () => {
+  await connect();
+  delete process.env.SUB2API_AUTO_SYNC;
+  calls = [];
+  assert.deepEqual(await syncSub2ApiAccounts("default", { force: true }), { added: 0 });
+  assert.equal(calls.length, 0);
+  assert.equal((await loadAccounts("default")).length, 1);
+});
+
 test("sync appends accounts added upstream, throttles per instance, and never drops existing ones", async () => {
+  process.env.SUB2API_AUTO_SYNC = "1";
   await connect();
   const [original] = await loadAccounts("default");
   await saveAccounts("default", [{ ...original, label: "Keep my nickname" }]);
