@@ -13,7 +13,7 @@ import {
 } from "@/lib/vault-client";
 import { extractBars, formatClock, planLabel } from "@/lib/format";
 import { AccountCard, accountDisplayName } from "@/components/AccountCard";
-import { providerMeta } from "@/components/providers-ui";
+import { PROVIDER_ORDER, providerMeta } from "@/components/providers-ui";
 import { AddAccountModal } from "@/components/AddAccountModal";
 import { NotificationsPanel } from "@/components/NotificationsPanel";
 import { SignOutButton } from "@/components/SignOutButton";
@@ -58,6 +58,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
   const [reconnectAccount, setReconnectAccount] = useState<BrowserAccount | null>(null);
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [providerFilter, setProviderFilter] = useState<ProviderId | "all">("all");
   const [lastRefreshAll, setLastRefreshAll] = useState<{ at: number; updated: number; total: number } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "error">("idle");
@@ -494,6 +495,18 @@ export function Dashboard({ showSignOut }: DashboardProps) {
     return present.size === 1 ? providerMeta([...present][0]).label : "AI";
   }, [accounts]);
 
+  // Provider filter for the card grid and summary tiles. Only offered when both providers are
+  // connected; a filter whose provider disappears falls back to showing everything.
+  const connectedProviders = useMemo(
+    () => PROVIDER_ORDER.filter((id) => accounts.some((a) => (a.provider ?? "anthropic") === id)),
+    [accounts],
+  );
+  const activeFilter = providerFilter !== "all" && connectedProviders.includes(providerFilter) ? providerFilter : "all";
+  const visibleAccounts = useMemo(
+    () => (activeFilter === "all" ? accounts : accounts.filter((a) => (a.provider ?? "anthropic") === activeFilter)),
+    [accounts, activeFilter],
+  );
+
   useEffect(() => {
     const root = document.documentElement;
     const previous = root.getAttribute("data-provider");
@@ -507,7 +520,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
   const stats = useMemo(() => {
     let peakSession: { percent: number; displayName: string } | null = null;
     let peakWeekly: { percent: number; displayName: string } | null = null;
-    for (const account of accounts) {
+    for (const account of visibleAccounts) {
       const usage = snapshots[account.id]?.usage;
       if (!usage) continue;
       for (const bar of extractBars(usage)) {
@@ -521,7 +534,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
       }
     }
     return { peakSession, peakWeekly };
-  }, [accounts, snapshots]);
+  }, [visibleAccounts, snapshots]);
 
   const retrySave = useCallback(() => queueSave(), [queueSave]);
   const retryPreference = useCallback(() => {
@@ -750,11 +763,33 @@ export function Dashboard({ showSignOut }: DashboardProps) {
           </div>
         ) : (
           <>
+            {connectedProviders.length > 1 && (
+              <div role="group" aria-label="Filter accounts by provider" className="animate-rise mb-4 inline-flex rounded-lg border border-border p-0.5">
+                {(["all", ...connectedProviders] as const).map((id) => {
+                  const selected = activeFilter === id;
+                  const meta = id === "all" ? null : providerMeta(id);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setProviderFilter(id)}
+                      aria-pressed={selected}
+                      className={`inline-flex min-h-9 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors ${
+                        selected ? "bg-surface-hover text-ivory" : "text-muted hover:text-ivory"
+                      }`}
+                    >
+                      {meta && <meta.Icon className="h-3.5 w-3.5" />}
+                      {meta ? meta.label : "All"}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             {accounts.length >= 2 && (
               <div className="animate-rise mb-6 grid grid-cols-2 gap-2 xs:grid-cols-3 sm:gap-3">
                 <div className="col-span-2 rounded-xl border border-border bg-surface px-3 py-3 xs:col-span-1 sm:px-4">
                   <p className="text-[11px] uppercase tracking-wide text-faint">Accounts</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-ivory">{accounts.length}</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums text-ivory">{visibleAccounts.length}</p>
                 </div>
                 <div className="min-w-0 rounded-xl border border-border bg-surface px-3 py-3 sm:px-4">
                   <p className="text-[11px] uppercase tracking-wide text-faint">Peak session</p>
@@ -781,7 +816,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
               </div>
             )}
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
-              {accounts.map((account, i) => (
+              {visibleAccounts.map((account, i) => (
                 <AccountCard
                   key={account.id}
                   account={account}
