@@ -10,9 +10,16 @@ services:
       APP_URL: http://mt-gpu2.bunny-viper.ts.net:3301
       APP_EXTRA_ORIGINS: https://hma.shulynn.com
       VAULT_DATA_DIR: /app/.data
-      ENABLE_LOCAL_CONNECT: "0"
+      # Same-machine shortcut: reads the host's Claude Code login mounted below. Only for a
+      # single-user, tailnet-only instance.
+      ENABLE_LOCAL_CONNECT: "1"
+      HOME: /home/node
+    # Match the host user so the 0600 credential file is readable; chown the vault volume once:
+    #   docker run --rm -v how-much-ai-sub2api-test_test-vault:/d alpine chown -R 1008:100 /d
+    user: "1008:100"
     volumes:
       - test-vault:/app/.data
+      - /home/wogong/.claude/.credentials.json:/home/node/.claude/.credentials.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
