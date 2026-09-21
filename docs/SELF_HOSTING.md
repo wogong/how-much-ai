@@ -93,7 +93,7 @@ The preferred path is the app-specific sign-in:
 
 The server exchanges it once, verifies the account, and stores the renewable credential in the encrypted vault.
 
-When the app runs on the same computer as Claude Code, it can also read that computer's Keychain or `~/.claude/.credentials.json`. This shortcut shares Claude Code's rotating credential and can require reconnection after either client renews it.
+When the app runs on the same computer as Claude Code, it can also read that computer's Keychain or `~/.claude/.credentials.json`. This shortcut shares Claude Code's rotating credential. When Claude Code renews it first, the app re-reads the local credential on its next poll and adopts it automatically (after verifying it belongs to the same account); when the app renews first, Claude Code may need to sign in again.
 
 Development mode enables this same-machine shortcut automatically. A production-mode local install must opt in:
 

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { AnthropicError } from "@/lib/anthropic";
 import { parseCredentials } from "@/lib/credentials";
-import { readLocalCredentialRaw, LocalCredentialError } from "@/lib/local-credentials";
+import { readLocalCredentialRaw, LocalCredentialError, localConnectAvailable } from "@/lib/local-credentials";
 import {
   resolveAccount,
   saveResolvedAccount,
@@ -15,14 +15,6 @@ import { browserMutationFailure, readJsonObject, requestBodyFailure } from "@/li
 // Node runtime: reads the local machine (child_process / fs) and decrypts the vault (node:crypto).
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-// Reading a local CLI credential is safe only when the server is running on the same machine as the
-// browser. Development enables it by default. A production-mode local install may opt in explicitly;
-// remote/serverless deployments remain inert and can use paste or pairing instead.
-function localConnectAvailable(): boolean {
-  if (process.env.VERCEL) return false;
-  return process.env.NODE_ENV !== "production" || process.env.ENABLE_LOCAL_CONNECT === "1";
-}
 
 // Feature-detect for the UI: 200 { available: true } only when local; 404 otherwise.
 export async function GET(req: Request) {

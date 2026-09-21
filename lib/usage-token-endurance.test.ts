@@ -863,3 +863,68 @@ test("a rotating credential with unknown expiry uses its verified access token u
   assert.equal(result.status, "ready");
   assert.equal(tokenCalls, 0);
 });
+
+// os.homedir() follows $HOME on Linux; macOS would consult the developer's real Keychain first.
+test(
+  "a rejected shared CLI login adopts the CLI's newer local credential instead of going offline",
+  { skip: process.platform === "darwin" },
+  async () => {
+    let now = 1_901_100_000_000;
+    Date.now = () => now;
+    const userId = "local-self-heal";
+    const stored: StoredAccount = { ...account("local-self-heal", now), credentialKind: "rotating" };
+    await saveAccounts(userId, [stored]);
+
+    const originalHome = process.env.HOME;
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "hmc-self-heal-home-"));
+    await fs.mkdir(path.join(home, ".claude"));
+    await fs.writeFile(
+      path.join(home, ".claude", ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: "access-cli-r1", refreshToken: "refresh-cli-r1", expiresAt: now + 3_600_000 },
+      }),
+    );
+    process.env.HOME = home;
+
+    const seen: string[] = [];
+    let profileUuid = stored.id;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes(TOKEN_URL_FRAGMENT)) {
+        seen.push("token");
+        return json({ error: "invalid_grant" }, 400);
+      }
+      if (url.includes(USAGE_URL_FRAGMENT)) {
+        seen.push(`usage:${bearer(init)}`);
+        return json({ five_hour: { utilization: 5, resets_at: null } });
+      }
+      if (url.includes(PROFILE_URL_FRAGMENT)) {
+        seen.push(`profile:${bearer(init)}`);
+        return json({ account: { uuid: profileUuid, email: stored.email } });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const healed = await getAccountUsage(userId, stored);
+      assert.equal(healed.status, "ready");
+      assert.deepEqual(seen.slice(0, 2), ["token", "profile:Bearer access-cli-r1"]);
+      assert.ok(seen.includes("usage:Bearer access-cli-r1"));
+      assert.equal((await loadAccounts(userId))[0].tokens.refreshToken, "refresh-cli-r1");
+
+      // The local file belongs to a different account: never adopt it, fall through to reauth.
+      const other: StoredAccount = { ...account("local-other", now), credentialKind: "rotating" };
+      await saveAccounts(userId, [(await loadAccounts(userId))[0], other]);
+      profileUuid = "someone-else";
+      seen.length = 0;
+      now += CACHE_TTL_MS + 1;
+      const rejected = await getAccountUsage(userId, other);
+      assert.equal(rejected.status, "reauth");
+      assert.equal((await loadAccounts(userId))[1].tokens.refreshToken, "refresh-local-other-0");
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  },
+);

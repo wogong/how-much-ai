@@ -40,6 +40,7 @@ import {
   saveTokenRecovery,
 } from "./vault";
 import { withLocalUsageRefreshLock } from "./local-file-lock";
+import { readLocalReplacementTokens } from "./local-credential-heal";
 import {
   decideCacheAction,
   needsRefresh,
@@ -400,6 +401,14 @@ async function refreshAndFetch(
         };
       }
       if (isHardAuthReject(err)) {
+        // A shared CLI login on this machine may have rotated the grant itself. Adopt its current
+        // pair (same-account verified, already-issued, so nothing is spent) instead of going offline.
+        const replacement = await readLocalReplacementTokens(account, base.refreshToken);
+        if (replacement) {
+          tokens = await persistAccountTokens(userId, account.id, base.refreshToken, replacement);
+          rotated = true;
+          return null;
+        }
         const { status, cooldownUntil } = reauthPatch(now);
         await store.commit({ status, cooldownUntil });
         return reauthResult(now, prior, err);

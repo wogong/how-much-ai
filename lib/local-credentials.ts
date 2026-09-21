@@ -41,3 +41,11 @@ export function readLocalCredentialRaw(deps?: CredentialDeps): Promise<string> {
 export function extractTokens(raw: string): AccountTokens {
   return _extractTokens(raw) as AccountTokens;
 }
+
+// Reading a local CLI credential is safe only when the server is running on the same machine as the
+// browser. Development enables it by default. A production-mode local install may opt in explicitly;
+// remote/serverless deployments remain inert and can use paste or pairing instead.
+export function localConnectAvailable(): boolean {
+  if (process.env.VERCEL) return false;
+  return process.env.NODE_ENV !== "production" || process.env.ENABLE_LOCAL_CONNECT === "1";
+}
