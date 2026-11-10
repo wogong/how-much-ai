@@ -70,6 +70,7 @@ export function extractBars(usage: UsageData, now = Date.now()): Bar[] {
   push("seven_day", "Weekly · all models", usage.seven_day);
   push("seven_day_opus", "Weekly · Opus", usage.seven_day_opus);
   push("seven_day_sonnet", "Weekly · Sonnet", usage.seven_day_sonnet);
+  push("seven_day_fable", "Weekly · Fable", usage.seven_day_fable);
   return bars;
 }
 

@@ -219,8 +219,10 @@ export function normalizeSub2ApiSnapshot(raw: JsonObject, provider: ProviderId, 
   } else {
     const session = bucket(extra.session_window_utilization, raw.session_window_end, 100);
     const weekly = bucket(extra.passive_usage_7d_utilization, extra.passive_usage_7d_reset, 100);
+    const fable = bucket(extra.passive_usage_7d_oi_utilization, extra.passive_usage_7d_oi_reset, 100);
     if (session) usage.five_hour = session;
     if (weekly) usage.seven_day = weekly;
+    if (fable) usage.seven_day_fable = fable;
   }
   return usage;
 }
@@ -257,7 +259,7 @@ export function sub2ApiProvider(provider: Provider, connection: NonNullable<Stor
         if (sampled !== null) {
           const now = Date.now();
           const measured: UsageData = {};
-          for (const key of ["five_hour", "seven_day", "seven_day_sonnet"] as const) {
+          for (const key of ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_fable"] as const) {
             const window = object(active[key]);
             const percent = numeric(window.utilization);
             const reset = timestamp(window.resets_at);

@@ -130,7 +130,15 @@ test("external accounts bypass expiry, token refresh and provider profile; concu
 
 test("Claude externally managed snapshot does not call Anthropic profile or OAuth", async () => {
   upstream.platform = "anthropic";
-  upstream.extra = { session_window_utilization: 0.42, passive_usage_7d_utilization: 0.15, passive_usage_7d_reset: Math.floor(Date.now()/1000) + 60000, passive_usage_sampled_at: new Date().toISOString() };
+  const weeklyReset = Math.floor(Date.now()/1000) + 60000;
+  upstream.extra = {
+    session_window_utilization: 0.42,
+    passive_usage_7d_utilization: 0.15,
+    passive_usage_7d_reset: weeklyReset,
+    passive_usage_7d_oi_utilization: 0.25,
+    passive_usage_7d_oi_reset: weeklyReset,
+    passive_usage_sampled_at: new Date().toISOString(),
+  };
   upstream.session_window_end = new Date(Date.now() + 600000).toISOString();
   await connect();
   const [account] = await loadAccounts("default");
@@ -138,8 +146,20 @@ test("Claude externally managed snapshot does not call Anthropic profile or OAut
   const result = await getAccountUsage("default", account);
   assert.equal(result.usage?.five_hour?.utilization, 42);
   assert.equal(result.usage?.seven_day?.utilization, 15);
+  assert.equal(result.usage?.seven_day_fable?.utilization, 25);
+  assert.equal(result.usage?.seven_day_fable?.resets_at, new Date(weeklyReset * 1000).toISOString());
+  assert.deepEqual(extractBars(result.usage!).map(bar => bar.label), ["Current session", "Weekly · all models", "Weekly · Fable"]);
   assert.equal(result.profile, null);
   assert.equal(calls.length, 1);
+});
+
+test("missing or expired Claude Fable samples stay unknown", () => {
+  const now = Date.parse("2026-11-10T00:00:00Z");
+  const futureReset = Math.floor((now + 3600000) / 1000);
+  const pastReset = Math.floor((now - 3600000) / 1000);
+  assert.equal(normalizeSub2ApiSnapshot({ extra: { passive_usage_7d_utilization: 0.1, passive_usage_7d_reset: futureReset } }, "anthropic", now).seven_day_fable, undefined);
+  assert.equal(normalizeSub2ApiSnapshot({ extra: { passive_usage_7d_oi_utilization: 0.1, passive_usage_7d_oi_reset: pastReset } }, "anthropic", now).seven_day_fable, undefined);
+  assert.equal(normalizeSub2ApiSnapshot({ extra: { passive_usage_7d_oi_utilization: 0, passive_usage_7d_oi_reset: futureReset } }, "anthropic", now).seven_day_fable?.utilization, 0);
 });
 
 test("rejected admin key requires reconnect without attempting upstream rotation", async () => {
@@ -400,11 +420,13 @@ test("Claude manual refresh consumes allowlisted active windows and reported tim
   const reset = new Date(Date.now() + 3600000).toISOString();
   const originalRead = globalThis.fetch;
   globalThis.fetch = (async (input, init) => String(input).includes("/usage?")
-    ? envelope({ updated_at: sampled, five_hour: { utilization: 45, resets_at: reset, access_token: "must-not-return" }, seven_day_sonnet: { utilization: 12, resets_at: reset }, secret: adminKey })
+    ? envelope({ updated_at: sampled, five_hour: { utilization: 45, resets_at: reset, access_token: "must-not-return" }, seven_day_sonnet: { utilization: 12, resets_at: reset }, seven_day_fable: { utilization: 7, resets_at: reset }, secret: adminKey })
     : originalRead(input, init)) as typeof fetch;
   const result = await getAccountUsage("default", account, { activeRefresh: true });
   assert.equal(result.usage?.five_hour?.utilization, 45);
   assert.equal(result.usage?.seven_day_sonnet?.utilization, 12);
+  assert.equal(result.usage?.seven_day_fable?.utilization, 7);
+  assert.equal(result.usage?.seven_day_fable?.resets_at, reset);
   assert.equal(result.usage?.snapshot?.sampledAt, sampled);
   assert.equal(result.stale, false);
   assert.ok(!JSON.stringify(result.usage).includes("must-not-return"));

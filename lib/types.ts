@@ -98,6 +98,7 @@ export interface UsageData {
   seven_day?: UsageBucket | null;
   seven_day_opus?: UsageBucket | null;
   seven_day_sonnet?: UsageBucket | null;
+  seven_day_fable?: UsageBucket | null;
   seven_day_oauth_apps?: UsageBucket | null;
   limits?: LimitEntry[] | null;
   extra_usage?: ExtraUsage | null;
