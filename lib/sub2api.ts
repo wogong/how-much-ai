@@ -19,7 +19,7 @@ export interface Sub2ApiAccountInfo {
 
 export class Sub2ApiError extends ProviderError {}
 
-// Automatic reads use metadata; explicit refresh uses /usage, which may probe upstream.
+// Claude automatic reads use passive /usage; Codex uses metadata. Explicit refresh may probe upstream.
 // The account credential /refresh endpoint is never called.
 async function request(baseUrl: string, adminKey: string, path: string, signal?: AbortSignal, timeoutMs = 15_000): Promise<unknown> {
   let response: Response;
@@ -227,6 +227,20 @@ export function normalizeSub2ApiSnapshot(raw: JsonObject, provider: ProviderId, 
   return usage;
 }
 
+function normalizeSub2ApiUsage(raw: JsonObject): UsageData {
+  const sampled = timestamp(raw.updated_at);
+  const usage: UsageData = { snapshot: { source: "sub2api", sampledAt: sampled ? new Date(sampled).toISOString() : null } };
+  for (const key of ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_fable"] as const) {
+    const window = object(raw[key]);
+    const percent = numeric(window.utilization);
+    const reset = timestamp(window.resets_at);
+    if (percent !== null && (reset === null || reset > Date.now())) {
+      usage[key] = { utilization: percent, resets_at: reset ? new Date(reset).toISOString() : null };
+    }
+  }
+  return usage;
+}
+
 // Preserve the upstream provider identity/presentation while replacing its credential lifecycle.
 export function sub2ApiProvider(provider: Provider, connection: NonNullable<StoredAccount["sub2api"]>): Provider {
   return {
@@ -242,7 +256,18 @@ export function sub2ApiProvider(provider: Provider, connection: NonNullable<Stor
     async fetchUsage(tokens, opts) {
       let { raw, info } = await readAccount(connection.baseUrl, tokens.accessToken, connection.accountId);
       if (info.provider !== provider.id) throw new Sub2ApiError("The sub2api account's provider changed. Remove and reconnect it.", 422);
-      if (!opts?.activeRefresh) return normalizeSub2ApiSnapshot(raw, provider.id);
+      if (!opts?.activeRefresh) {
+        if (provider.id === "anthropic") {
+          // Scoped keys omit Claude snapshots from account metadata; passive usage never probes upstream.
+          const passive = object(await request(connection.baseUrl, tokens.accessToken,
+            `/${connection.accountId}/usage?source=passive`));
+          if (passive.error || passive.error_code) {
+            throw new Sub2ApiError("sub2api could not read the saved usage snapshot. Check this account in sub2api.", 502);
+          }
+          return normalizeSub2ApiUsage(passive);
+        }
+        return normalizeSub2ApiSnapshot(raw, provider.id);
+      }
 
       const active = object(await request(connection.baseUrl, tokens.accessToken,
         `/${connection.accountId}/usage?source=active&force=true`, undefined, 45_000));
@@ -254,22 +279,10 @@ export function sub2ApiProvider(provider: Provider, connection: NonNullable<Stor
       ({ raw, info } = await readAccount(connection.baseUrl, tokens.accessToken, connection.accountId));
       if (info.provider !== provider.id) throw new Sub2ApiError("The sub2api account's provider changed. Remove and reconnect it.", 422);
       let usage = normalizeSub2ApiSnapshot(raw, provider.id);
-      if (provider.id === "anthropic" && raw.type === "oauth" && active.source !== "passive") {
-        const sampled = timestamp(active.updated_at);
-        if (sampled !== null) {
-          const now = Date.now();
-          const measured: UsageData = {};
-          for (const key of ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_fable"] as const) {
-            const window = object(active[key]);
-            const percent = numeric(window.utilization);
-            const reset = timestamp(window.resets_at);
-            if (percent !== null && (reset === null || reset > now)) {
-              measured[key] = { utilization: percent, resets_at: reset ? new Date(reset).toISOString() : null };
-            }
-          }
-          if (Object.keys(measured).length) {
-            usage = { ...measured, snapshot: { source: "sub2api", sampledAt: new Date(sampled).toISOString() } };
-          }
+      if (provider.id === "anthropic" && (raw.type === "oauth" || active.source === "passive")) {
+        const measured = normalizeSub2ApiUsage(active);
+        if (active.source === "passive" || (measured.snapshot?.sampledAt && Object.keys(measured).length > 1)) {
+          usage = measured;
         }
       }
       usage.snapshot!.refreshCompletedAt = Date.now();
