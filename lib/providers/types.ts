@@ -24,6 +24,18 @@ export class ProviderError extends Error {
   }
 }
 
+// A supplemental usage read failed after a provider obtained a safe, normalized partial snapshot.
+// The coordinator can retain those windows while backing off the failed request.
+export class PartialUsageError extends ProviderError {
+  readonly usage: UsageData;
+
+  constructor(message: string, status: number, usage: UsageData) {
+    super(message, status);
+    this.name = "PartialUsageError";
+    this.usage = usage;
+  }
+}
+
 // The HTTP status carried by either an AnthropicError or a ProviderError (both expose `.status`),
 // or undefined for a plain/network error. Lets shared code branch on status without knowing which
 // provider raised it.

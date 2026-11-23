@@ -26,6 +26,7 @@ import {
   isProfilePermissionError,
 } from "./anthropic";
 import { getAccountProvider, httpStatusOf } from "./providers/index";
+import { PartialUsageError } from "./providers/types";
 import {
   createRedisUsageCacheFromConfig,
   redisUsageConfig,
@@ -43,6 +44,7 @@ import { withLocalUsageRefreshLock } from "./local-file-lock";
 import { readLocalReplacementTokens } from "./local-credential-heal";
 import {
   decideCacheAction,
+  isUsageRetryBlocked,
   needsRefresh,
   reauthPatch,
   CACHE_TTL_MS,
@@ -104,10 +106,11 @@ function rowToEntry(row: CacheRow | null): CacheEntry | null {
   };
 }
 
-function coordinatedCacheAction(entry: CacheEntry | null, now: number, activeRefresh = false, usage?: UsageData | null): CacheAction {
-  // Reauth is terminal until an explicit reconnect clears this account's cache state. Treating a
-  // rejected token as valid merely because its timestamp is in the future would restart rotation.
-  if (entry?.status === "reauth") return "cooldown";
+function coordinatedCacheAction(account: StoredAccount, entry: CacheEntry | null, now: number, activeRefresh = false, usage?: UsageData | null): CacheAction {
+  if (entry?.status === "reauth") {
+    return isUsageRetryBlocked(entry, now, getAccountProvider(account).managesCredentialsExternally)
+      ? "cooldown" : "fetch";
+  }
   if (activeRefresh) {
     // Manual external-source reads bypass passive cache freshness, never leases or backoff.
     if (entry && entry.cooldownUntil > now) return "cooldown";
@@ -436,6 +439,15 @@ async function refreshAndFetch(
       provider.id === "anthropic" && !provider.managesCredentialsExternally ? fetchProfileForCredential(tokens) : Promise.resolve(null),
     ]);
   } catch (err) {
+    if (provider.managesCredentialsExternally && err instanceof PartialUsageError) {
+      const partial = { ...prior, usage: err.usage };
+      const result = httpStatusOf(err) === 401 || httpStatusOf(err) === 403
+        ? reauthResult(now, partial, err)
+        : { ...staleResult(now, partial), error: errMsg(err) };
+      // Keep the last fully successful fetch time so cache freshness cannot hide this backoff.
+      await store.commit({ usage: err.usage, profile: null, status: result.status, cooldownUntil: result.cooldownUntil });
+      return result;
+    }
     if (httpStatusOf(err) === 401 && rotated) {
       const { status, cooldownUntil } = reauthPatch(now);
       await store.commit({ status, cooldownUntil });
@@ -545,7 +557,7 @@ async function getAccountUsageConvex(
   let claim: { acquired: boolean; cached: CacheRow | null };
   try {
     row = (await client.query(anyApi.usageCache.get, { secret: cx.secret, key })) as CacheRow | null;
-    const action = coordinatedCacheAction(rowToEntry(row), now, activeRefresh, parseJson<UsageData>(row?.usage));
+    const action = coordinatedCacheAction(account, rowToEntry(row), now, activeRefresh, parseJson<UsageData>(row?.usage));
     if (action === "fresh") return readyOrStaleResult(row, false);
     if (action === "cooldown") return readyOrStaleResult(row, true);
 
@@ -563,7 +575,7 @@ async function getAccountUsageConvex(
   }
 
   if (activeRefresh) {
-    const action = coordinatedCacheAction(rowToEntry(claim.cached), Date.now(), true, parseJson<UsageData>(claim.cached?.usage));
+    const action = coordinatedCacheAction(account, rowToEntry(claim.cached), Date.now(), true, parseJson<UsageData>(claim.cached?.usage));
     if (action !== "fetch") {
       await client.mutation(anyApi.usageCache.release, { secret: cx.secret, key, owner }).catch(() => {});
       return readyOrStaleResult(claim.cached, action === "cooldown");
@@ -639,7 +651,7 @@ async function getAccountUsageRedis(
   // same refresh token. Last-good cached data is safe to serve if the claim call itself fails.
   try {
     row = await cache.get(key);
-    const action = coordinatedCacheAction(rowToEntry(row), now, activeRefresh, parseJson<UsageData>(row?.usage));
+    const action = coordinatedCacheAction(account, rowToEntry(row), now, activeRefresh, parseJson<UsageData>(row?.usage));
     if (action === "fresh") return readyOrStaleResult(row, false);
     if (action === "cooldown") return readyOrStaleResult(row, true);
     claim = await cache.claim(key, owner, REFRESH_LOCK_MS);
@@ -665,7 +677,7 @@ async function getAccountUsageRedis(
 
   // Another owner may have published fresh data between our first GET and this successful claim.
   // Re-check the atomic claim snapshot and release without another upstream request when possible.
-  const claimedAction = coordinatedCacheAction(rowToEntry(claim.cached), Date.now(), activeRefresh, parseJson<UsageData>(claim.cached?.usage));
+  const claimedAction = coordinatedCacheAction(account, rowToEntry(claim.cached), Date.now(), activeRefresh, parseJson<UsageData>(claim.cached?.usage));
   if (claimedAction === "fresh" || claimedAction === "cooldown") {
     await cache.release(key, owner).catch(() => false);
     return readyOrStaleResult(claim.cached, claimedAction === "cooldown");
@@ -776,7 +788,7 @@ async function getAccountUsageLocal(userId: string, account: StoredAccount, acti
   const now = Date.now();
   const entry = localCache.get(key) ?? null;
 
-  const action = coordinatedCacheAction(localToEntry(entry), now, activeRefresh, entry?.usage);
+  const action = coordinatedCacheAction(account, localToEntry(entry), now, activeRefresh, entry?.usage);
   if (action === "fresh") return localResult(entry, false);
   if (action === "cooldown") return localResult(entry, true);
 

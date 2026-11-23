@@ -12,6 +12,7 @@ import {
   type VaultSnapshot,
 } from "@/lib/vault-client";
 import { extractBars, formatClock, planLabel } from "@/lib/format";
+import { isUsageRetryBlocked } from "@/lib/usage-cache-core";
 import { AccountCard, accountDisplayName } from "@/components/AccountCard";
 import { PROVIDER_ORDER, providerMeta } from "@/components/providers-ui";
 import { AddAccountModal } from "@/components/AddAccountModal";
@@ -197,15 +198,12 @@ export function Dashboard({ showSignOut }: DashboardProps) {
     async (id: string, manual = false): Promise<boolean> => {
       if (inFlight.current.has(id)) return false;
       const existingSnapshot = snapshotsRef.current[id];
-      if (
-        existingSnapshot?.status === "reauth" ||
-        (existingSnapshot?.cooldownUntil ?? 0) > Date.now()
-      ) {
+      const account = accountsRef.current.find((account) => account.id === id);
+      if (!account || isUsageRetryBlocked(existingSnapshot, Date.now(), Boolean(account.source))) {
         return false;
       }
       inFlight.current.add(id);
       try {
-        if (!accountsRef.current.some((account) => account.id === id)) return false;
         setSnapshots((prev) => ({ ...prev, [id]: { ...prev[id], status: "loading" } }));
 
         // Send the account id so the server can key its shared cache + single-flight refresh lock
@@ -214,7 +212,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
         const res = await fetch("/api/usage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ accountId: id, activeRefresh: manual && Boolean(accountsRef.current.find(a => a.id === id)?.source) }),
+          body: JSON.stringify({ accountId: id, activeRefresh: manual && Boolean(account.source) }),
         });
 
         // A 401 here means the app session expired (not the Claude token) — go re-authenticate.
@@ -241,7 +239,7 @@ export function Dashboard({ showSignOut }: DashboardProps) {
         // deliberately credential-free, so this tab only updates usage and display metadata.
         if (!accountsRef.current.some((a) => a.id === id)) return false;
 
-        // Dead token: the account must be re-added. Never retry-storm (the server is in cooldown).
+        // Keep the auth error visible; external keys are checked again after the server cooldown.
         if (data.status === "reauth") {
           setSnapshots((prev) => ({
             ...prev,

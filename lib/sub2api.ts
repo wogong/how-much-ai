@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { normalizeSub2ApiUrl, validSub2ApiAccountId } from "./sub2api-config";
 import { openaiPlanLabel } from "./providers/openai";
-import { ProviderError, type Provider, type ProviderId } from "./providers/types";
+import { httpStatusOf, PartialUsageError, ProviderError, type Provider, type ProviderId } from "./providers/types";
 import type { StoredAccount, UsageBucket, UsageData } from "./types";
 import { loadAccounts, mutateAccounts } from "./vault";
 
@@ -19,7 +19,7 @@ export interface Sub2ApiAccountInfo {
 
 export class Sub2ApiError extends ProviderError {}
 
-// Claude automatic reads use passive /usage; Codex uses metadata. Explicit refresh may probe upstream.
+// Claude reads saved usage first, repairing missing OAuth Fable windows through sub2api. Codex uses metadata.
 // The account credential /refresh endpoint is never called.
 async function request(baseUrl: string, adminKey: string, path: string, signal?: AbortSignal, timeoutMs = 15_000): Promise<unknown> {
   let response: Response;
@@ -258,13 +258,35 @@ export function sub2ApiProvider(provider: Provider, connection: NonNullable<Stor
       if (info.provider !== provider.id) throw new Sub2ApiError("The sub2api account's provider changed. Remove and reconnect it.", 422);
       if (!opts?.activeRefresh) {
         if (provider.id === "anthropic") {
-          // Scoped keys omit Claude snapshots from account metadata; passive usage never probes upstream.
+          // Scoped keys omit Claude snapshots from metadata; read the saved usage first.
           const passive = object(await request(connection.baseUrl, tokens.accessToken,
             `/${connection.accountId}/usage?source=passive`));
           if (passive.error || passive.error_code) {
             throw new Sub2ApiError("sub2api could not read the saved usage snapshot. Check this account in sub2api.", 502);
           }
-          return normalizeSub2ApiUsage(passive);
+          const usage = normalizeSub2ApiUsage(passive);
+          if (raw.type !== "oauth" || usage.seven_day_fable) return usage;
+          // Headers can omit Fable after a weekly reset. Let sub2api query using the account's proxy.
+          try {
+            const active = object(await request(connection.baseUrl, tokens.accessToken,
+              `/${connection.accountId}/usage?source=active`, undefined, 45_000));
+            if (active.error || active.error_code) throw new Sub2ApiError("Supplemental usage unavailable.", 502);
+            const measured = normalizeSub2ApiUsage(active);
+            // Active responses can be partial. Keep passive windows without giving them a newer sample time.
+            const retainsPassive = Object.keys(usage).some(key => key !== "snapshot" && !(key in measured));
+            if (retainsPassive) {
+              const passiveAt = timestamp(usage.snapshot?.sampledAt);
+              const activeAt = timestamp(measured.snapshot?.sampledAt);
+              measured.snapshot!.sampledAt = passiveAt !== null && activeAt !== null
+                ? new Date(Math.min(passiveAt, activeAt)).toISOString() : null;
+            }
+            return { ...usage, ...measured };
+          } catch (error) {
+            throw new PartialUsageError(
+              "sub2api could not update the missing Fable quota. Showing saved usage; automatic checks will retry after the cooldown.",
+              httpStatusOf(error) ?? 502, usage,
+            );
+          }
         }
         return normalizeSub2ApiSnapshot(raw, provider.id);
       }

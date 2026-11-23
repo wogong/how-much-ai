@@ -27,6 +27,15 @@ export interface CacheEntry {
 
 export type CacheAction = "fresh" | "cooldown" | "fetch";
 
+// External keys can become valid again without reconnecting; rotating logins cannot be retried safely.
+export function isUsageRetryBlocked(
+  entry: { status?: string; cooldownUntil?: number } | null | undefined,
+  now: number,
+  externallyManaged = false,
+): boolean {
+  return (entry?.status === "reauth" && !externallyManaged) || (entry?.cooldownUntil ?? 0) > now;
+}
+
 // What should a reader do with the current cache entry?
 //   fresh    → recent successful data; return it as-is (fast path, no upstream call).
 //   cooldown → stale data but we're in an upstream back-off; return it flagged stale, no upstream.
