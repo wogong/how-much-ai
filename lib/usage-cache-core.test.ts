@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   decideCacheActionWithTokens,
+  isUsageRetryBlocked,
   decideCacheAction,
   needsRefresh,
   claimDecision,
@@ -147,4 +148,14 @@ test("withTokens: fresh cache still wins regardless of token validity", () => {
 
 test("withTokens: no entry → fetch (same as base rule)", () => {
   assert.equal(decideCacheActionWithTokens(null, NOW, true), "fetch");
+});
+
+
+test("dashboard and server retry external auth failures only after cooldown", () => {
+  const rejected = { status: "reauth", cooldownUntil: NOW + COOLDOWN_MS };
+  assert.equal(isUsageRetryBlocked(rejected, NOW, true), true);
+  assert.equal(isUsageRetryBlocked(rejected, rejected.cooldownUntil, true), false);
+  assert.equal(isUsageRetryBlocked(rejected, rejected.cooldownUntil + 1, false), true);
+  assert.equal(isUsageRetryBlocked({ status: "stale", cooldownUntil: NOW + 1 }, NOW, true), true);
+  assert.equal(isUsageRetryBlocked(undefined, NOW, true), false);
 });

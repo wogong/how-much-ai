@@ -303,7 +303,7 @@ export function AccountCard({
           <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg-raised p-4">
             <p className="text-sm leading-relaxed text-muted">
               {account.source === "magpie" ? "Magpie rejected the key or quota access. Check Quotas and allowed addresses, then reconnect with a current gateway key."
-                : externalSource ? "sub2api rejected its admin key. Reconnect with the current administrator key."
+                : externalSource ? "sub2api rejected its admin key or access. Automatic checks retry after the cooldown. Reconnect if the key changed."
                 : managedLogin
                 ? "This private app login expired or was revoked. Sign in with Claude again to restore automatic renewal."
                 : setupToken

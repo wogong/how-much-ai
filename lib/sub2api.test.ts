@@ -142,6 +142,17 @@ test("Claude externally managed snapshot does not call Anthropic profile or OAut
   upstream.session_window_end = new Date(Date.now() + 600000).toISOString();
   await connect();
   const [account] = await loadAccounts("default");
+  const originalRead = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith("/usage?source=passive")) {
+      calls.push(String(input));
+      return envelope({ source: "passive", updated_at: (upstream.extra as Record<string, unknown>).passive_usage_sampled_at,
+        five_hour: { utilization: 42, resets_at: upstream.session_window_end },
+        seven_day: { utilization: 15, resets_at: new Date(weeklyReset * 1000).toISOString() },
+        seven_day_fable: { utilization: 25, resets_at: new Date(weeklyReset * 1000).toISOString() } });
+    }
+    return originalRead(input, init);
+  }) as typeof fetch;
   calls = [];
   const result = await getAccountUsage("default", account);
   assert.equal(result.usage?.five_hour?.utilization, 42);
@@ -150,7 +161,7 @@ test("Claude externally managed snapshot does not call Anthropic profile or OAut
   assert.equal(result.usage?.seven_day_fable?.resets_at, new Date(weeklyReset * 1000).toISOString());
   assert.deepEqual(extractBars(result.usage!).map(bar => bar.label), ["Current session", "Weekly · all models", "Weekly · Fable"]);
   assert.equal(result.profile, null);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("missing or expired Claude Fable samples stay unknown", () => {
@@ -162,7 +173,65 @@ test("missing or expired Claude Fable samples stay unknown", () => {
   assert.equal(normalizeSub2ApiSnapshot({ extra: { passive_usage_7d_oi_utilization: 0, passive_usage_7d_oi_reset: futureReset } }, "anthropic", now).seven_day_fable?.utilization, 0);
 });
 
-test("rejected admin key requires reconnect without attempting upstream rotation", async () => {
+test("scoped Claude keys read passive Fable windows without upstream access or secret leakage", async () => {
+  upstream.platform = "anthropic";
+  upstream.extra = {};
+  await connect();
+  const [account] = await loadAccounts("default");
+  const sampled = new Date(Date.now() - 3600000).toISOString();
+  const reset = new Date(Date.now() + 3600000).toISOString();
+  const originalRead = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/42/usage?source=passive")) {
+      calls.push(url);
+      assert.equal(init?.method, "GET");
+      assert.equal(init?.redirect, "error");
+      assert.equal(new Headers(init?.headers).get("x-api-key"), adminKey);
+      return envelope({ source: "passive", updated_at: sampled,
+        seven_day: { utilization: 7, resets_at: reset },
+        seven_day_fable: { utilization: 0, resets_at: reset, access_token: "must-not-return" }, secret: adminKey });
+    }
+    return originalRead(input, init);
+  }) as typeof fetch;
+  calls = [];
+  const result = await getAccountUsage("default", account);
+  assert.equal(result.usage?.seven_day_fable?.utilization, 0);
+  assert.equal(result.usage?.seven_day_fable?.resets_at, reset);
+  assert.equal(result.usage?.snapshot?.sampledAt, sampled);
+  assert.equal(result.stale, true, "a passive read must not make an old sample fresh");
+  assert.deepEqual(extractBars(result.usage!).map(bar => bar.label), ["Weekly · all models", "Weekly · Fable"]);
+  assert.deepEqual(calls, [baseUrl + "/api/v1/admin/accounts/42", baseUrl + "/api/v1/admin/accounts/42/usage?source=passive"]);
+  assert.ok(!JSON.stringify(toBrowserUsageResponse(result)).includes(adminKey));
+  assert.ok(!JSON.stringify(toBrowserUsageResponse(result)).includes("must-not-return"));
+});
+
+test("passive Claude responses keep absent, null, expired and undated windows unknown or stale", async () => {
+  upstream.platform = "anthropic";
+  upstream.type = "setup-token";
+  upstream.extra = {};
+  await connect();
+  const [account] = await loadAccounts("default");
+  const originalRead = globalThis.fetch;
+  let passive: Record<string, unknown> = { source: "passive", seven_day_fable: { utilization: null } };
+  globalThis.fetch = (async (input, init) => String(input).endsWith("/usage?source=passive")
+    ? envelope(passive) : originalRead(input, init)) as typeof fetch;
+  for (const window of [null, { utilization: null }, { utilization: 20, resets_at: new Date(Date.now() - 1000).toISOString() }]) {
+    passive = { source: "passive", seven_day_fable: window };
+    await clearAccountUsageState("default", account.id);
+    const result = await getAccountUsage("default", account);
+    assert.equal(result.usage?.seven_day_fable, undefined);
+    assert.equal(result.stale, true);
+  }
+  passive = { source: "passive", seven_day_fable: { utilization: 0, resets_at: new Date(Date.now() + 3600000).toISOString() } };
+  await clearAccountUsageState("default", account.id);
+  const result = await getAccountUsage("default", account);
+  assert.equal(result.usage?.seven_day_fable?.utilization, 0);
+  assert.equal(result.usage?.snapshot?.sampledAt, null);
+  assert.equal(result.stale, true);
+});
+
+test("rejected admin key backs off without attempting upstream rotation", async () => {
   await connect();
   const [account] = await loadAccounts("default");
   upstreamStatus = 403;
@@ -173,6 +242,149 @@ test("rejected admin key requires reconnect without attempting upstream rotation
   assert.match(result.error ?? "", /admin key/);
   await getAccountUsage("default", account);
   assert.equal(calls.length, 1);
+});
+
+for (const rejectedStatus of [401, 403]) {
+  test(`external admin key recovers after HTTP ${rejectedStatus} without reconnect or rotation`, async (t) => {
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    await connect();
+    const [account] = await loadAccounts("default");
+    upstreamStatus = rejectedStatus;
+    calls = [];
+    const rejected = await getAccountUsage("default", account);
+    assert.equal(rejected.status, "reauth");
+    assert.equal(calls.length, 1);
+
+    now = rejected.cooldownUntil - 1;
+    assert.equal((await getAccountUsage("default", account, { activeRefresh: true })).status, "reauth");
+    assert.equal(calls.length, 1, "manual refresh respects authentication backoff");
+    now += 1;
+    const stillRejected = await getAccountUsage("default", account);
+    assert.equal(stillRejected.status, "reauth");
+    assert.equal(calls.length, 2, "one recheck after cooldown, even when still rejected");
+    assert.ok(stillRejected.cooldownUntil > now);
+
+    upstreamStatus = 200;
+    now = stillRejected.cooldownUntil;
+    upstream.extra = { codex_5h_used_percent: 25, codex_5h_reset_at: new Date(now + 3600000).toISOString(), codex_usage_updated_at: new Date(now).toISOString() };
+    const recovered = await Promise.all(Array.from({ length: 5 }, () => getAccountUsage("default", account)));
+    assert.ok(recovered.every(result => result.status === "ready"));
+    assert.equal(calls.length, 3, "concurrent polls share one authentication recheck");
+    assert.equal(recovered[0].usage?.five_hour?.utilization, 25);
+    assert.equal(recovered[0].cooldownUntil, 0);
+    assert.deepEqual((await loadAccounts("default"))[0].tokens, account.tokens);
+    assert.ok(calls.every(url => url.startsWith(baseUrl) && !url.includes("/refresh")));
+  });
+}
+
+for (const passiveFable of [null, { utilization: 38, resets_at: "2020-01-01T00:00:00Z" }]) {
+  test(`automatic Claude read fills ${passiveFable ? "expired" : "missing"} Fable through sub2api`, async () => {
+    upstream.platform = "anthropic";
+    upstream.extra = {};
+    await connect();
+    const [account] = await loadAccounts("default");
+    const reset = new Date(Date.now() + 86400000).toISOString();
+    const sampled = new Date().toISOString();
+    const originalRead = globalThis.fetch;
+    let activeCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url.includes("/usage?")) {
+        assert.equal(new Headers(init?.headers).get("x-api-key"), adminKey);
+        assert.equal(init?.method, "GET");
+        if (url.endsWith("source=passive")) return envelope({ updated_at: sampled, seven_day_fable: passiveFable });
+        assert.equal(url, baseUrl + "/api/v1/admin/accounts/42/usage?source=active");
+        activeCalls += 1;
+        return envelope({ updated_at: sampled, seven_day_fable: { utilization: 0, resets_at: reset, access_token: "must-not-return" } });
+      }
+      return originalRead(input, init);
+    }) as typeof fetch;
+    const results = await Promise.all(Array.from({ length: 5 }, () => getAccountUsage("default", account)));
+    assert.equal(results[0].usage?.seven_day_fable?.utilization, 0);
+    assert.equal(results[0].usage?.seven_day_fable?.resets_at, reset);
+    assert.equal(results[0].usage?.snapshot?.refreshCompletedAt, undefined, "automatic read is not a manual refresh");
+    await getAccountUsage("default", account);
+    assert.equal(activeCalls, 1, "automatic reads share the usage cache and lease");
+    assert.ok(!JSON.stringify(toBrowserUsageResponse(results[0])).includes("must-not-return"));
+  });
+}
+
+for (const failure of [401, 403, 429, 503, "timeout", "payload"] as const) {
+  test(`automatic Fable failure ${failure} preserves passive usage and backs off`, async (t) => {
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    upstream.platform = "anthropic";
+    upstream.extra = {};
+    await connect();
+    const [account] = await loadAccounts("default");
+    const sampled = new Date(now - 60_000).toISOString();
+    const reset = new Date(now + 86400000).toISOString();
+    const originalRead = globalThis.fetch;
+    let activeCalls = 0;
+    let failing = true;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("source=passive")) return envelope({ updated_at: sampled,
+        five_hour: { utilization: 10, resets_at: reset }, seven_day: { utilization: 20, resets_at: reset } });
+      if (url.endsWith("source=active")) {
+        activeCalls += 1;
+        if (!failing) return envelope({ updated_at: new Date(now).toISOString(), seven_day_fable: { utilization: 0, resets_at: reset } });
+        if (failure === "timeout") throw new Error("private proxy details must-not-return");
+        if (failure === "payload") return envelope({ error: "private upstream details must-not-return" });
+        return new Response("private upstream details must-not-return", { status: failure });
+      }
+      return originalRead(input, init);
+    }) as typeof fetch;
+    const result = await getAccountUsage("default", account);
+    assert.equal(result.status, failure === 401 || failure === 403 ? "reauth" : "stale");
+    assert.equal(result.stale, true);
+    assert.equal(result.usage?.five_hour?.utilization, 10);
+    assert.equal(result.usage?.seven_day?.utilization, 20);
+    assert.equal(result.usage?.seven_day_fable, undefined);
+    assert.equal(result.usage?.snapshot?.sampledAt, sampled);
+    assert.equal(result.cooldownUntil, now + 15 * 60_000);
+    assert.ok(!JSON.stringify(toBrowserUsageResponse(result)).includes("must-not-return"));
+    now = result.cooldownUntil - 1;
+    for (const activeRefresh of [false, true]) {
+      const cached = await getAccountUsage("default", account, { activeRefresh });
+      assert.equal(cached.stale, true);
+      assert.equal(cached.usage?.five_hour?.utilization, 10);
+    }
+    assert.equal(activeCalls, 1);
+    now += 1;
+    failing = false;
+    const recovered = await getAccountUsage("default", account);
+    assert.equal(activeCalls, 2);
+    assert.equal(recovered.cooldownUntil, 0);
+    assert.equal(recovered.usage?.five_hour?.utilization, 10);
+    assert.equal(recovered.usage?.seven_day_fable?.utilization, 0);
+    assert.equal(recovered.usage?.snapshot?.sampledAt, sampled, "partial active data cannot renew passive sample age");
+    assert.equal(recovered.stale, true, "the retained passive windows are old after the cooldown");
+  });
+}
+
+test("automatic partial active responses retain passive windows and unknown quota", async () => {
+  upstream.platform = "anthropic";
+  upstream.extra = {};
+  await connect();
+  const [account] = await loadAccounts("default");
+  const reset = new Date(Date.now() + 86400000).toISOString();
+  const originalRead = globalThis.fetch;
+  let activeCalls = 0;
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("source=passive")) return envelope({ five_hour: { utilization: 10, resets_at: reset } });
+    if (url.endsWith("source=active")) { activeCalls += 1; return envelope({ updated_at: new Date().toISOString() }); }
+    return originalRead(input, init);
+  }) as typeof fetch;
+  const result = await getAccountUsage("default", account);
+  assert.equal(result.usage?.five_hour?.utilization, 10);
+  assert.equal(result.usage?.seven_day_fable, undefined, "missing is never a measured zero");
+  assert.equal(result.usage?.snapshot?.sampledAt, null, "unknown passive age cannot be replaced by the active response time");
+  assert.equal(result.stale, true);
+  await getAccountUsage("default", account);
+  assert.equal(activeCalls, 1);
 });
 
 test("old or undated snapshots stay stale on cache hits", async () => {
@@ -431,6 +643,27 @@ test("Claude manual refresh consumes allowlisted active windows and reported tim
   assert.equal(result.stale, false);
   assert.ok(!JSON.stringify(result.usage).includes("must-not-return"));
   assert.ok(!JSON.stringify(result.usage).includes(adminKey));
+});
+
+test("SetupToken explicit refresh retains measured passive Fable windows and their original age", async () => {
+  upstream.platform = "anthropic";
+  upstream.type = "setup-token";
+  upstream.extra = {};
+  await connect();
+  const [account] = await loadAccounts("default");
+  const sampled = new Date(Date.now() - 3600000).toISOString();
+  const reset = new Date(Date.now() + 3600000).toISOString();
+  const originalRead = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => String(input).includes("/usage?")
+    ? envelope({ source: "passive", updated_at: sampled, seven_day_fable: { utilization: 0, resets_at: reset } })
+    : originalRead(input, init)) as typeof fetch;
+  for (const activeRefresh of [false, true]) {
+    const result = await getAccountUsage("default", account, { activeRefresh });
+    assert.equal(result.usage?.seven_day_fable?.utilization, 0);
+    assert.equal(result.usage?.snapshot?.sampledAt, sampled);
+    assert.equal(result.stale, true);
+    assert.equal(result.usage?.five_hour, undefined);
+  }
 });
 
 test("empty Claude active responses cannot mark old quota fresh", async () => {
